@@ -52,13 +52,8 @@ func (h *ProcessHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// 校验必填字段
 	linkID, _ := body["linkid"].(string)
-	callbackURL, _ := body["callback_url"].(string)
 	if linkID == "" {
 		writeJSON(w, http.StatusBadRequest, resp(1001, "缺少 linkid", "", "", nil))
-		return
-	}
-	if callbackURL == "" {
-		writeJSON(w, http.StatusBadRequest, resp(1001, "缺少 callback_url", "", "", nil))
 		return
 	}
 
@@ -130,18 +125,16 @@ func (h *TasksHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		LinkID    string `json:"linkid"`
 		Path      string `json:"interface_path"`
 		Status    string `json:"status"`
-		CallbackURL string `json:"callback_url"`
 		CreatedAt string `json:"created_at"`
 	}
 	var views []taskView
 	for _, t := range tasks {
 		views = append(views, taskView{
-			TaskID:      t.TaskID,
-			LinkID:      t.LinkID,
-			Path:        t.Path,
-			Status:      string(t.Status),
-			CallbackURL: t.CallbackURL,
-			CreatedAt:   t.CreatedAt,
+			TaskID:    t.TaskID,
+			LinkID:    t.LinkID,
+			Path:      t.Path,
+			Status:    string(t.Status),
+			CreatedAt: t.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp(0, "success", "", "", map[string]interface{}{
@@ -190,18 +183,17 @@ func (h *TasksHandler) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp(0, "success", taskID, task.LinkID, map[string]interface{}{
-		"task_id":           task.TaskID,
-		"linkid":            task.LinkID,
-		"path":              task.Path,
-		"status":            task.Status,
-		"request_body":      mustParseJSON(task.RequestBody),
-		"prompt":            task.Prompt,
-		"sdk_output":        task.SdkOutput,
-		"callback_body":     mustParseJSON(task.CallbackBody),
-		"callback_response": mustParseJSON(task.CallbackResponse),
-		"error_message":     task.ErrorMessage,
-		"created_at":        task.CreatedAt,
-		"finished_at":       task.FinishedAt,
+		"task_id":       task.TaskID,
+		"linkid":        task.LinkID,
+		"path":          task.Path,
+		"status":        task.Status,
+		"request_body":  mustParseJSON(task.RequestBody),
+		"prompt":        task.Prompt,
+		"sdk_output":    task.SdkOutput,
+		"sdk_trace":     task.SdkTrace,
+		"error_message": task.ErrorMessage,
+		"created_at":    task.CreatedAt,
+		"finished_at":   task.FinishedAt,
 	}))
 }
 
@@ -233,7 +225,7 @@ func (h *TasksHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		"request_body":  mustParseJSON(task.RequestBody),
 		"prompt":        task.Prompt,
 		"sdk_output":    task.SdkOutput,
-		"callback_body": mustParseJSON(task.CallbackBody),
+		"sdk_trace":     task.SdkTrace,
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
 		"finished_at":   task.FinishedAt,

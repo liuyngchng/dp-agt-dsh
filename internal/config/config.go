@@ -23,12 +23,10 @@ type ServerConfig struct {
 }
 
 type SysConfig struct {
-	MaxConcurrentTasks       int `yaml:"max_concurrent_tasks"`
-	MaxPendingTasks          int `yaml:"max_pending_tasks"`
-	CallbackRetries          int `yaml:"callback_retries"`
-	CallbackRetryIntervalSec int `yaml:"callback_retry_interval_sec"`
-	RetentionDays            int `yaml:"retention_days"`
-	DataDir                  string
+	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"`
+	MaxPendingTasks    int `yaml:"max_pending_tasks"`
+	RetentionDays      int `yaml:"retention_days"`
+	DataDir            string
 }
 
 type LLMConfig struct {
@@ -91,8 +89,6 @@ func Load(dataDir string) (*Config, error) {
 	// sys
 	cfg.Sys.MaxConcurrentTasks = intMap(raw, "sys.max_concurrent_tasks", 5)
 	cfg.Sys.MaxPendingTasks = intMap(raw, "sys.max_pending_tasks", 10)
-	cfg.Sys.CallbackRetries = intMap(raw, "sys.callback_retries", 3)
-	cfg.Sys.CallbackRetryIntervalSec = intMap(raw, "sys.callback_retry_interval_sec", 2)
 	cfg.Sys.RetentionDays = intMap(raw, "sys.retention_days", 30)
 	cfg.Sys.DataDir = strMap(raw, "sys.data_dir", "data")
 
@@ -167,7 +163,6 @@ func (c *Config) RawConfig() map[string]interface{} {
 		"sys": map[string]interface{}{
 			"max_concurrent_tasks": c.Sys.MaxConcurrentTasks,
 			"max_pending_tasks":    c.Sys.MaxPendingTasks,
-			"callback_retries":     c.Sys.CallbackRetries,
 			"retention_days":       c.Sys.RetentionDays,
 		},
 		"llm": map[string]interface{}{

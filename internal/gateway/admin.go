@@ -17,6 +17,7 @@ import (
 
 	"dp-agt-dsh/internal/config"
 	"dp-agt-dsh/internal/engine"
+	"dp-agt-dsh/internal/harness"
 	"dp-agt-dsh/internal/store"
 )
 
@@ -68,6 +69,7 @@ func (h *AdminHandler) HandleNav(w http.ResponseWriter, r *http.Request) {
 	tabs = append(tabs, tab{"audit", "fa-search", "任务审查"})
 	if isAdmin {
 		tabs = append(tabs,
+			tab{"sessions", "fa-comments", "会话管理"},
 			tab{"sys", "fa-sliders-h", "系统设置"},
 			tab{"users", "fa-users", "用户管理"},
 		)
@@ -399,18 +401,17 @@ func (h *AdminHandler) HandleTaskTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, resp(0, "success", taskID, task.LinkID, map[string]interface{}{
-		"task_id":          task.TaskID,
-		"linkid":           task.LinkID,
-		"path":             task.Path,
-		"status":           task.Status,
-		"request_body":     mustParseJSON(task.RequestBody),
-		"prompt":           task.Prompt,
-		"sdk_output":       task.SdkOutput,
-		"callback_body":    mustParseJSON(task.CallbackBody),
-		"callback_response": mustParseJSON(task.CallbackResponse),
-		"error_message":    task.ErrorMessage,
-		"created_at":       task.CreatedAt,
-		"finished_at":      task.FinishedAt,
+		"task_id":       task.TaskID,
+		"linkid":        task.LinkID,
+		"path":          task.Path,
+		"status":        task.Status,
+		"request_body":  mustParseJSON(task.RequestBody),
+		"prompt":        task.Prompt,
+		"sdk_output":    task.SdkOutput,
+		"sdk_trace":     task.SdkTrace,
+		"error_message": task.ErrorMessage,
+		"created_at":    task.CreatedAt,
+		"finished_at":   task.FinishedAt,
 	}))
 }
 
@@ -426,18 +427,115 @@ func (h *AdminHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, resp(0, "success", task.TaskID, linkID, map[string]interface{}{
-		"task_id":          task.TaskID,
-		"linkid":           task.LinkID,
-		"path":             task.Path,
-		"status":           task.Status,
-		"request_body":     mustParseJSON(task.RequestBody),
-		"prompt":           task.Prompt,
-		"sdk_output":       task.SdkOutput,
-		"callback_body":    mustParseJSON(task.CallbackBody),
-		"error_message":    task.ErrorMessage,
-		"created_at":       task.CreatedAt,
-		"finished_at":      task.FinishedAt,
+		"task_id":       task.TaskID,
+		"linkid":        task.LinkID,
+		"path":          task.Path,
+		"status":        task.Status,
+		"request_body":  mustParseJSON(task.RequestBody),
+		"prompt":        task.Prompt,
+		"sdk_output":    task.SdkOutput,
+		"sdk_trace":     task.SdkTrace,
+		"error_message": task.ErrorMessage,
+		"created_at":    task.CreatedAt,
+		"finished_at":   task.FinishedAt,
 	}))
+}
+
+// ── 会话管理 ──
+
+func (h *AdminHandler) HandleSessions(w http.ResponseWriter, r *http.Request) {
+	list, err := h.store.ListAllSessions()
+	if err != nil {
+		writeJSON(w, 500, resp(5000, err.Error(), "", "", nil))
+		return
+	}
+	if list == nil {
+		list = []store.Session{}
+	}
+	writeJSON(w, 200, map[string]interface{}{"code": 0, "data": list})
+}
+
+func (h *AdminHandler) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/admin/sessions/")
+	session, _ := h.store.GetSession(sessionID)
+	if session == nil {
+		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
+		return
+	}
+	// 删除工作目录
+	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(session.LinkID))
+	if _, err := os.Stat(workDir); err == nil {
+		_ = os.RemoveAll(workDir)
+	}
+	h.store.RemoveSession(sessionID)
+	log.Printf("[admin] session_deleted: %s linkid=%s workDir=%s", sessionID, session.LinkID, workDir)
+	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
+}
+
+// HandleSessionChat 会话续聊（debug 用）：复用原 session 上下文发送消息 SSE 流
+func (h *AdminHandler) HandleSessionChat(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// path = /admin/sessions/:session_id/chat
+	parts := strings.Split(strings.TrimPrefix(path, "/admin/sessions/"), "/")
+	if len(parts) < 2 || parts[1] != "chat" {
+		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
+		return
+	}
+	sessionID := parts[0]
+
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Message == "" {
+		writeJSON(w, 400, resp(1001, "缺少 message", "", "", nil))
+		return
+	}
+
+	session, _ := h.store.GetSession(sessionID)
+	if session == nil {
+		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, 500, resp(5000, "SSE not supported", "", "", nil))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// 确保 dsh 已运行
+	if h.queue != nil {
+		// 使用 queue 现有的 ensureDSH 能力
+	}
+	// 直接创建 harness client 做 query
+	ds := harness.NewClient(h.cfg.LLM)
+	if err := ds.Start(); err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "启动运行时失败: " + err.Error()})
+		return
+	}
+	defer ds.Close()
+
+	// resume session
+	if err := ds.ResumeSession(sessionID); err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "恢复会话失败: " + err.Error()})
+		return
+	}
+
+	// run query with stream
+	_, err := ds.Run(sessionID, body.Message, func(n harness.Notification) {
+		data, _ := json.Marshal(n)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	})
+	if err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": err.Error()})
+		return
+	}
+	sendSSEEvent(w, flusher, map[string]interface{}{"type": "end"})
 }
 
 // ── 服务器信息（公开） ──
@@ -453,6 +551,20 @@ func (h *AdminHandler) HandleInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── helpers ──
+
+func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, v map[string]interface{}) {
+	data, _ := json.Marshal(v)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	flusher.Flush()
+}
+
+func sanitizeDirName(s string) string {
+	replacer := strings.NewReplacer(
+		"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_",
+		"\"", "_", "<", "_", ">", "_", "|", "_",
+	)
+	return replacer.Replace(s)
+}
 
 func maskIfPresent(s string) string {
 	if s == "" {

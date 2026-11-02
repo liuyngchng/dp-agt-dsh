@@ -13,6 +13,7 @@ data/*.db-wal
 data/secrets.key
 data/cfg.yml
 data/mock.json
+data/mock1.json
 data/logs/
 data/tasks/
 data/dsh-home/

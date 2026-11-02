@@ -83,9 +83,6 @@ func (s *Store) migrate() error {
 			prompt           TEXT,
 			sdk_output       TEXT,
 			sdk_trace        TEXT,
-			callback_body    TEXT,
-			callback_response TEXT,
-			callback_url     TEXT,
 			error_message    TEXT,
 			created_at       TEXT,
 			finished_at      TEXT,
@@ -207,46 +204,42 @@ func (s *Store) ListInterfaces() ([]AgentInterface, error) {
 type TaskStatus string
 
 const (
-	StatusPending      TaskStatus = "pending"
-	StatusProcessing   TaskStatus = "processing"
-	StatusFailed       TaskStatus = "failed"
-	StatusCompleted    TaskStatus = "completed"
-	StatusCallbackFail TaskStatus = "callback_fail"
-	StatusCancelled    TaskStatus = "cancelled"
+	StatusPending    TaskStatus = "pending"
+	StatusProcessing TaskStatus = "processing"
+	StatusFailed     TaskStatus = "failed"
+	StatusCompleted  TaskStatus = "completed"
+	StatusCancelled  TaskStatus = "cancelled"
 )
 
 type TaskLog struct {
-	TaskID           string     `json:"task_id"`
-	LinkID           string     `json:"linkid"`
-	SessionID        string     `json:"session_id"`
-	Path             string     `json:"path"`
-	InterfaceID      string     `json:"interface_id"`
-	Status           TaskStatus `json:"status"`
-	RequestBody      string     `json:"request_body"`
-	RequestResponse  string     `json:"request_response"`
-	Prompt           string     `json:"prompt"`
-	SdkOutput        string     `json:"sdk_output"`
-	SdkTrace         string     `json:"sdk_trace"`
-	CallbackBody     string     `json:"callback_body"`
-	CallbackResponse string     `json:"callback_response"`
-	CallbackURL      string     `json:"callback_url"`
-	ErrorMessage     string     `json:"error_message"`
-	CreatedAt        string     `json:"created_at"`
-	FinishedAt       string     `json:"finished_at"`
-	CreatedTs        int64      `json:"created_ts"`
-	FinishedTs       int64      `json:"finished_ts"`
+	TaskID          string     `json:"task_id"`
+	LinkID          string     `json:"linkid"`
+	SessionID       string     `json:"session_id"`
+	Path            string     `json:"path"`
+	InterfaceID     string     `json:"interface_id"`
+	Status          TaskStatus `json:"status"`
+	RequestBody     string     `json:"request_body"`
+	RequestResponse string     `json:"request_response"`
+	Prompt          string     `json:"prompt"`
+	SdkOutput       string     `json:"sdk_output"`
+	SdkTrace        string     `json:"sdk_trace"`
+	ErrorMessage    string     `json:"error_message"`
+	CreatedAt       string     `json:"created_at"`
+	FinishedAt      string     `json:"finished_at"`
+	CreatedTs       int64      `json:"created_ts"`
+	FinishedTs      int64      `json:"finished_ts"`
 }
 
 func (s *Store) CreateTaskLog(t *TaskLog) error {
 	_, err := s.db.Exec(
 		`INSERT INTO task_logs (task_id, linkid, session_id, path, interface_id, status,
 		 request_body, request_response, prompt, sdk_output, sdk_trace,
-		 callback_body, callback_response, callback_url, error_message,
+		 error_message,
 		 created_at, finished_at, created_ts, finished_ts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.TaskID, t.LinkID, t.SessionID, t.Path, t.InterfaceID, t.Status,
 		t.RequestBody, t.RequestResponse, t.Prompt, t.SdkOutput, t.SdkTrace,
-		t.CallbackBody, t.CallbackResponse, t.CallbackURL, t.ErrorMessage,
+		t.ErrorMessage,
 		t.CreatedAt, t.FinishedAt, t.CreatedTs, t.FinishedTs,
 	)
 	return err
@@ -256,14 +249,13 @@ func (s *Store) GetTaskLog(taskID string) (*TaskLog, error) {
 	row := s.db.QueryRow(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(callback_body,''),
-		COALESCE(callback_response,''), COALESCE(callback_url,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE task_id = ?`, taskID)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
-		&t.CallbackBody, &t.CallbackResponse, &t.CallbackURL, &t.ErrorMessage,
+		&t.ErrorMessage,
 		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -282,14 +274,13 @@ func (s *Store) getTaskByWhere(where string, args ...interface{}) (*TaskLog, err
 	row := s.db.QueryRow(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(callback_body,''),
-		COALESCE(callback_response,''), COALESCE(callback_url,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE `+where, args...)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
-		&t.CallbackBody, &t.CallbackResponse, &t.CallbackURL, &t.ErrorMessage,
+		&t.ErrorMessage,
 		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -357,7 +348,7 @@ func (s *Store) ListTasksPaged(taskID, linkID string, offset, limit int) ([]Task
 	countQ := "SELECT COUNT(*) FROM task_logs " + where
 	s.db.QueryRow(countQ, args...).Scan(&total)
 
-	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(callback_body,''), COALESCE(callback_response,''), COALESCE(callback_url,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	dataArgs := append(append([]interface{}{}, args...), limit, offset)
 	rows, err := s.db.Query(dataQ, dataArgs...)
 	if err != nil {
@@ -372,8 +363,7 @@ func (s *Store) queryTasks(where string, args ...interface{}) ([]TaskLog, error)
 	rows, err := s.db.Query(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(callback_body,''),
-		COALESCE(callback_response,''), COALESCE(callback_url,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs `+where, args...)
 	if err != nil {
@@ -389,7 +379,7 @@ func scanTasks(rows *sql.Rows) ([]TaskLog, error) {
 		var t TaskLog
 		if err := rows.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 			&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
-			&t.CallbackBody, &t.CallbackResponse, &t.CallbackURL, &t.ErrorMessage,
+			&t.ErrorMessage,
 			&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs); err != nil {
 			return nil, err
 		}
@@ -432,6 +422,46 @@ func (s *Store) UpsertSession(sessionID, linkID string) error {
 		sessionID, linkID, ts, ts, now, now,
 	)
 	return err
+}
+
+func (s *Store) ListAllSessions() ([]Session, error) {
+	rows, err := s.db.Query(`SELECT session_id, linkid, status,
+		COALESCE(created_at,''), COALESCE(updated_at,''), COALESCE(created_ts,0), COALESCE(updated_ts,0)
+		FROM sessions ORDER BY updated_ts DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.SessionID, &sess.LinkID, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt, &sess.CreatedTs, &sess.UpdatedTs); err != nil {
+			continue
+		}
+		out = append(out, sess)
+	}
+	return out, nil
+}
+
+func (s *Store) GetSession(sessionID string) (*Session, error) {
+	row := s.db.QueryRow(`SELECT session_id, linkid, status,
+		COALESCE(created_at,''), COALESCE(updated_at,''), COALESCE(created_ts,0), COALESCE(updated_ts,0)
+		FROM sessions WHERE session_id = ?`, sessionID)
+	var sess Session
+	err := row.Scan(&sess.SessionID, &sess.LinkID, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt, &sess.CreatedTs, &sess.UpdatedTs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return &sess, err
+}
+
+func (s *Store) RemoveSession(sessionID string) bool {
+	result, err := s.db.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
 }
 
 // ── PromptConfig（加密 KV） ──

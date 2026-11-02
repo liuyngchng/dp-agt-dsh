@@ -1,15 +1,12 @@
 package engine
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -96,7 +93,6 @@ func (q *Queue) recoverOrphanedTasks() {
 func (q *Queue) Enqueue(iface *store.AgentInterface, body map[string]interface{}) *QueueItem {
 	taskID := newUUID()
 	linkID, _ := body["linkid"].(string)
-	callbackURL, _ := body["callback_url"].(string)
 	bodyJSON, _ := json.Marshal(body)
 
 	resp := fmt.Sprintf(`{"code":0,"timestamp":"%s","message":"success","task_id":"%s","linkid":"%s"}`,
@@ -110,7 +106,6 @@ func (q *Queue) Enqueue(iface *store.AgentInterface, body map[string]interface{}
 		Status:          store.StatusPending,
 		RequestBody:     string(bodyJSON),
 		RequestResponse: resp,
-		CallbackURL:     callbackURL,
 		CreatedAt:       store.TimeNowFmt(),
 		CreatedTs:       store.TimeNowMs(),
 	}
@@ -169,7 +164,6 @@ func (q *Queue) pump() {
 func (q *Queue) processItem(item *QueueItem) {
 	taskID := item.TaskID
 	linkID, _ := item.Body["linkid"].(string)
-	callbackURL, _ := item.Body["callback_url"].(string)
 
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"status": string(store.StatusProcessing)})
 	log.Printf("[queue] processing: task=%s link=%s path=%s", taskID, linkID, item.Path)
@@ -177,12 +171,12 @@ func (q *Queue) processItem(item *QueueItem) {
 	// 读提示词模板
 	template := LoadPromptFromDisk(item.Path)
 	if template == "" {
-		q.failTask(taskID, "提示词文件不存在: "+item.Path, callbackURL, linkID)
+		q.failTask(taskID, "提示词文件不存在: "+item.Path)
 		return
 	}
 
 	// 渲染
-	rendered := RenderPrompt(template, item.Body)
+	rendered := RenderPrompt(template, item.Body, taskID)
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"prompt": rendered})
 
 	// 查 session
@@ -196,12 +190,14 @@ func (q *Queue) processItem(item *QueueItem) {
 	workDir := filepath.Join(q.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkID))
 	_, err := BuildTaskDir(workDir, q.store, q.cfg.RawConfig())
 	if err != nil {
-		q.failTask(taskID, "创建工作目录失败: "+err.Error(), callbackURL, linkID)
+		q.failTask(taskID, "创建工作目录失败: "+err.Error())
 		return
 	}
 
-	// mock 模式：不启动 dsh，直接返回一个占位结果
-	if callbackURL == "mock" {
+	// mock 模式：检查是否显式 mock（callback_url == "mock" 或 body 有 is_mock）
+	isMock, _ := item.Body["callback_url"].(string)
+	isMockFlag, _ := item.Body["is_mock"].(bool)
+	if isMock == "mock" || isMockFlag {
 		log.Printf("[queue] mock: task=%s path=%s prompt_rendered=%d bytes", taskID, item.Path, len(rendered))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":      string(store.StatusCompleted),
@@ -215,7 +211,7 @@ func (q *Queue) processItem(item *QueueItem) {
 
 	// 启动 dsh
 	if err := q.ensureDSH(); err != nil {
-		q.failTask(taskID, "启动 dsh 运行时失败: "+err.Error(), callbackURL, linkID)
+		q.failTask(taskID, "启动 dsh 运行时失败: "+err.Error())
 		return
 	}
 
@@ -259,7 +255,7 @@ func (q *Queue) processItem(item *QueueItem) {
 			"finished_ts":   store.TimeNowMs(),
 		})
 		PublishStream(sessionID, harness.Notification{Method: "end"})
-		q.callback(callbackURL, linkID, taskID, 5000, fmt.Sprintf("dsh 处理失败: %v", err), nil)
+		log.Printf("[queue] task=%s link=%s failed: %v", taskID, linkID, err)
 		return
 	}
 
@@ -267,14 +263,16 @@ func (q *Queue) processItem(item *QueueItem) {
 	_ = q.store.UpsertSession(sessionID, linkID)
 	trace, _ := json.Marshal(result.Events)
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
-		"session_id": sessionID,
-		"sdk_output": result.FinalResponse,
-		"sdk_trace":  string(trace),
+		"session_id":  sessionID,
+		"sdk_output":  result.FinalResponse,
+		"sdk_trace":   string(trace),
+		"status":      string(store.StatusCompleted),
+		"finished_at": store.TimeNowFmt(),
+		"finished_ts": store.TimeNowMs(),
 	})
 
-	parsed := extractJSON(result.FinalResponse)
 	PublishStream(sessionID, harness.Notification{Method: "end"})
-	q.callback(callbackURL, linkID, taskID, 0, "success", parsed)
+	log.Printf("[queue] task=%s link=%s completed", taskID, linkID)
 }
 
 func (q *Queue) ensureDSH() error {
@@ -289,134 +287,14 @@ func (q *Queue) ensureDSH() error {
 	return nil
 }
 
-func (q *Queue) failTask(taskID, errMsg, callbackURL, linkID string) {
+func (q *Queue) failTask(taskID, errMsg string) {
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 		"status":        string(store.StatusFailed),
 		"error_message": errMsg,
 		"finished_at":   store.TimeNowFmt(),
 		"finished_ts":   store.TimeNowMs(),
 	})
-	q.callback(callbackURL, linkID, taskID, 5000, errMsg, nil)
 }
-
-func (q *Queue) callback(url, linkID, taskID string, code int, message string, data interface{}) {
-	if url == "" || url == "mock" {
-		// mock 模式：直接标记完成
-		status := store.StatusCompleted
-		if code != 0 {
-			status = store.StatusFailed
-		}
-		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
-			"status": string(status),
-		})
-		log.Printf("[queue] mock complete: task=%s status=%s code=%d", taskID, status, code)
-		return
-	}
-
-	payload := map[string]interface{}{
-		"code":      code,
-		"timestamp": store.TimeNowFmt(),
-		"message":   message,
-		"task_id":   taskID,
-		"linkid":    linkID,
-		"data":      data,
-	}
-	if data == nil {
-		payload["data"] = nil
-	}
-
-	cbPayload, _ := json.Marshal(payload)
-
-	// 回调 + 重试
-	maxRetries := q.cfg.Sys.CallbackRetries
-	baseInterval := time.Duration(q.cfg.Sys.CallbackRetryIntervalSec) * time.Second
-
-	success := false
-	var lastResp string
-	var lastErr string
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			delay := baseInterval * time.Duration(1<<(attempt-1))
-			time.Sleep(delay)
-		}
-
-		resp, err := postOnce(url, string(cbPayload), taskID, q.store)
-		if err == nil {
-			success = true
-			lastResp = resp
-			break
-		}
-		lastErr = err.Error()
-		lastResp = resp
-	}
-
-	finalStatus := store.StatusCompleted
-	if !success {
-		finalStatus = store.StatusCallbackFail
-	}
-
-	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
-		"status":            string(finalStatus),
-		"callback_body":     string(cbPayload),
-		"callback_response": lastResp,
-		"error_message":     lastErr,
-		"finished_at":       store.TimeNowFmt(),
-		"finished_ts":       store.TimeNowMs(),
-	})
-}
-
-// postOnce 发送单次 HTTP POST 回调
-func postOnce(url, payload, taskID string, s *store.Store) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	token, _ := s.GetConfigPlain("doc.file_url_token")
-	if token == "" {
-		token, _ = s.GetConfigPlain("sys.file_url_token")
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(payload))
-	if err != nil {
-		return "", fmt.Errorf("request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	bodyStr := string(body)
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return bodyStr, fmt.Errorf("http %d: %s", resp.StatusCode, bodyStr)
-	}
-	return bodyStr, nil
-}
-
-// DeliverCallback 公开的回调投递接口（给 tasks 路由用）
-func DeliverCallback(url string, payload map[string]interface{}, cfg *config.Config, taskID string) {
-	payloadJSON, _ := json.Marshal(payload)
-	maxRetries := cfg.Sys.CallbackRetries
-	baseInterval := time.Duration(cfg.Sys.CallbackRetryIntervalSec) * time.Second
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(baseInterval * time.Duration(1<<(attempt-1)))
-		}
-		_, err := postOnce(url, string(payloadJSON), taskID, nil)
-		if err == nil {
-			return
-		}
-	}
-}
-
-// ── helpers ──
 
 func sanitizeDirName(s string) string {
 	r := strings.NewReplacer(
@@ -436,21 +314,6 @@ func newUUID() string {
 	}
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-func extractJSON(text string) interface{} {
-	re := regexp.MustCompile("(?s)```json\\s*([\\s\\S]*?)```")
-	if m := re.FindStringSubmatch(text); m != nil {
-		var result interface{}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &result); err == nil {
-			return result
-		}
-	}
-	var result interface{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &result); err == nil {
-		return result
-	}
-	return map[string]string{"raw_output": text}
 }
 
 func getStr(m map[string]interface{}, key string) string {

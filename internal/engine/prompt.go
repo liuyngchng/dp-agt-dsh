@@ -102,10 +102,14 @@ func InitPrompts(dataDir string) {
 	_ = list
 }
 
-// RenderPrompt 渲染提示词：替换 {{request.xxx}} 占位符
-func RenderPrompt(template string, requestBody map[string]interface{}) string {
+// RenderPrompt 渲染提示词：替换 {{request.xxx}} 和 {{task_id}} 占位符
+func RenderPrompt(template string, requestBody map[string]interface{}, taskID ...string) string {
+	result := template
+	if len(taskID) > 0 && taskID[0] != "" {
+		result = strings.ReplaceAll(result, "{{task_id}}", taskID[0])
+	}
 	re := regexp.MustCompile(`\{\{(request\.[^}]+)\}\}`)
-	return re.ReplaceAllStringFunc(template, func(match string) string {
+	return re.ReplaceAllStringFunc(result, func(match string) string {
 		inner := re.FindStringSubmatch(match)[1]
 		fieldPath := strings.TrimPrefix(inner, "request.")
 		var val interface{}
