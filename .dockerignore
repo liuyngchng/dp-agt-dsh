@@ -1,0 +1,30 @@
+# Docker build context 忽略
+# 注意：不能排除 Go 源码（*.go / cmd/ / go.mod），否则构建阶段无法编译
+
+# 已编译好的二进制（容器内会重新构建）
+dp-agt-dsh
+
+# 运行时数据（容器挂载卷，不进镜像）
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/secrets.key
+data/cfg.yml
+data/logs/
+data/tasks/
+data/dsh-home/
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# 自身
+Dockerfile
+.dockerignore
+build.sh
+fetch-dsh-runtime.sh

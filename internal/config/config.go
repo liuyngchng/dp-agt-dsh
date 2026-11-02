@@ -1,0 +1,238 @@
+package config
+
+import (
+	"os"
+	"strconv"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config 系统配置
+type Config struct {
+	Server ServerConfig `yaml:"server"`
+	Sys    SysConfig    `yaml:"sys"`
+	LLM    LLMConfig    `yaml:"llm"`
+}
+
+type ServerConfig struct {
+	Port    int    `yaml:"port"`
+	Debug   bool   `yaml:"debug"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	SelfIP  string `yaml:"self_ip"`
+}
+
+type SysConfig struct {
+	MaxConcurrentTasks       int `yaml:"max_concurrent_tasks"`
+	MaxPendingTasks          int `yaml:"max_pending_tasks"`
+	CallbackRetries          int `yaml:"callback_retries"`
+	CallbackRetryIntervalSec int `yaml:"callback_retry_interval_sec"`
+	RetentionDays            int `yaml:"retention_days"`
+	DataDir                  string
+}
+
+type LLMConfig struct {
+	BaseURL                   string `yaml:"base_url"`
+	AuthToken                 string `yaml:"auth_token"`
+	Model                     string `yaml:"model"`
+	OpusModel                 string `yaml:"opus_model"`
+	SonnetModel               string `yaml:"sonnet_model"`
+	HaikuModel                 string `yaml:"haiku_model"`
+	SubagentModel             string `yaml:"subagent_model"`
+	EffortLevel               string `yaml:"effort_level"`
+	TimeoutMs                 int    `yaml:"timeout_ms"`
+	DisableNonessentialTraffic bool   `yaml:"disable_nonessential_traffic"`
+	AttributionHeader         bool   `yaml:"attribution_header"`
+	AutoModeServer            bool   `yaml:"auto_mode_server"`
+
+	// dsh 特有
+	Provider string `yaml:"-"` // deepseek-official | anthropic | ...
+	DSHome   string `yaml:"-"` // dsh 运行时 home 目录
+}
+
+// RawConfig 用于获取 cfg.yml 的原始 map 供 CLAUDE.md 模板渲染
+func LoadRaw(dataDir string) (map[string]interface{}, error) {
+	paths := []string{
+		dataDir + "/cfg.yml",
+		"data/cfg.yml",
+	}
+	var raw map[string]interface{}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	return raw, nil // 允许不存在
+}
+
+func Load(dataDir string) (*Config, error) {
+	raw, err := LoadRaw(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		raw = make(map[string]interface{})
+	}
+
+	cfg := &Config{}
+
+	// server
+	cfg.Server.Port = intMap(raw, "server.port", 20001)
+	cfg.Server.Debug = boolMap(raw, "server.debug", false)
+	cfg.Server.CertFile = strMap(raw, "server.cert_file", "")
+	cfg.Server.KeyFile = strMap(raw, "server.key_file", "")
+	cfg.Server.SelfIP = strMap(raw, "server.self_ip", "")
+
+	// sys
+	cfg.Sys.MaxConcurrentTasks = intMap(raw, "sys.max_concurrent_tasks", 5)
+	cfg.Sys.MaxPendingTasks = intMap(raw, "sys.max_pending_tasks", 10)
+	cfg.Sys.CallbackRetries = intMap(raw, "sys.callback_retries", 3)
+	cfg.Sys.CallbackRetryIntervalSec = intMap(raw, "sys.callback_retry_interval_sec", 2)
+	cfg.Sys.RetentionDays = intMap(raw, "sys.retention_days", 30)
+	cfg.Sys.DataDir = strMap(raw, "sys.data_dir", "data")
+
+	// env override
+	if v := os.Getenv("DATA_DIR"); v != "" {
+		cfg.Sys.DataDir = v
+	}
+	if v := os.Getenv("SERVER_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Server.Port = n
+		}
+	}
+	if v := os.Getenv("MAX_CONCURRENT_TASKS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Sys.MaxConcurrentTasks = n
+		}
+	}
+	if v := os.Getenv("MAX_PENDING_TASKS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Sys.MaxPendingTasks = n
+		}
+	}
+
+	// llm
+	cfg.LLM.BaseURL = strMap(raw, "llm.base_url", "")
+	cfg.LLM.AuthToken = strMap(raw, "llm.auth_token", "")
+	cfg.LLM.Model = strMap(raw, "llm.model", "deepseek-v4-pro")
+	cfg.LLM.OpusModel = strMap(raw, "llm.opus_model", "")
+	cfg.LLM.SonnetModel = strMap(raw, "llm.sonnet_model", "")
+	cfg.LLM.HaikuModel = strMap(raw, "llm.haiku_model", "")
+	cfg.LLM.SubagentModel = strMap(raw, "llm.subagent_model", "")
+	cfg.LLM.EffortLevel = strMap(raw, "llm.effort_level", "")
+	cfg.LLM.TimeoutMs = intMap(raw, "llm.timeout_ms", 600000)
+	cfg.LLM.DisableNonessentialTraffic = boolMap(raw, "llm.disable_nonessential_traffic", true)
+	cfg.LLM.AttributionHeader = boolMap(raw, "llm.attribution_header", false)
+	cfg.LLM.AutoModeServer = boolMap(raw, "llm.auto_mode_server", false)
+
+	// 环境变量覆盖
+	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
+		cfg.LLM.BaseURL = v
+	}
+	if v := os.Getenv("ANTHROPIC_AUTH_TOKEN"); v != "" {
+		cfg.LLM.AuthToken = v
+	}
+	if v := os.Getenv("ANTHROPIC_MODEL"); v != "" {
+		cfg.LLM.Model = v
+	}
+
+	// dsh 特有默认值
+	cfg.LLM.Provider = "deepseek-official"
+	cfg.LLM.DSHome = os.Getenv("DSH_HOME")
+	if cfg.LLM.DSHome == "" {
+		cfg.LLM.DSHome = dataDir + "/dsh-home"
+	}
+
+	// 校验
+	if cfg.LLM.BaseURL == "" {
+		// dsh 可以直接连 DeepSeek 官方，不需要 base_url
+		// 但如果有自定义网关，必须配置
+	}
+
+	return cfg, nil
+}
+
+// RawConfig 返回原始 map（给 CLAUDE.md 模板用）
+func (c *Config) RawConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"server": map[string]interface{}{
+			"port":    c.Server.Port,
+			"self_ip": c.Server.SelfIP,
+		},
+		"sys": map[string]interface{}{
+			"max_concurrent_tasks": c.Sys.MaxConcurrentTasks,
+			"max_pending_tasks":    c.Sys.MaxPendingTasks,
+			"callback_retries":     c.Sys.CallbackRetries,
+			"retention_days":       c.Sys.RetentionDays,
+		},
+		"llm": map[string]interface{}{
+			"base_url":  c.LLM.BaseURL,
+			"model":     c.LLM.Model,
+			"provider":  c.LLM.Provider,
+		},
+	}
+}
+
+// ── 辅助 ──
+
+func strMap(raw map[string]interface{}, path, def string) string {
+	v := dig(raw, path)
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return def
+}
+
+func intMap(raw map[string]interface{}, path string, def int) int {
+	v := dig(raw, path)
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return def
+}
+
+func boolMap(raw map[string]interface{}, path string, def bool) bool {
+	v := dig(raw, path)
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return def
+}
+
+func dig(m map[string]interface{}, path string) interface{} {
+	parts := splitPath(path)
+	var cur interface{} = m
+	for _, p := range parts {
+		mm, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		cur = mm[p]
+	}
+	return cur
+}
+
+func splitPath(p string) []string {
+	var parts []string
+	s := ""
+	for _, c := range p {
+		if c == '.' {
+			parts = append(parts, s)
+			s = ""
+		} else {
+			s += string(c)
+		}
+	}
+	if s != "" {
+		parts = append(parts, s)
+	}
+	return parts
+}

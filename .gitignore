@@ -1,0 +1,34 @@
+# dsh 运行时二进制（从 PyPI 拉取，不进 Git，~308MB）
+bin/deepseek-harness-sdk-runtime-*
+bin/linux-x64/
+
+# 编译产物
+dp-agt-dsh
+*.exe
+
+# 数据目录
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/secrets.key
+data/cfg.yml
+data/mock.json
+data/logs/
+data/tasks/
+data/dsh-home/
+
+# Go
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/

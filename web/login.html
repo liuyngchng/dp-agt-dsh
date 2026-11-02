@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/lib/font-awesome.all.min.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+    <title id="pageTitle">AI 数字员工 - 登录</title>
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-card">
+            <div class="login-header">
+                <i class="fas fa-robot"></i>
+                <h1 id="sysNameHeader">AI 数字员工</h1>
+                <p>请登录以继续</p>
+            </div>
+
+            <div class="login-error" id="loginError" style="display:none;">
+                <i class="fas fa-exclamation-circle"></i> <span id="loginErrorMsg"></span>
+            </div>
+
+            <form id="loginForm" class="login-form">
+                <div class="login-field">
+                    <label><i class="fas fa-user"></i> 用户名</label>
+                    <input type="text" id="userName" placeholder="请输入用户名" required autocomplete="off">
+                </div>
+                <div class="login-field">
+                    <label><i class="fas fa-lock"></i> 密码</label>
+                    <input type="password" id="userPwd" placeholder="请输入密码" required>
+                </div>
+                <button type="submit" class="login-btn">
+                    <i class="fas fa-sign-in-alt"></i> 登 录
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 强制修改密码弹窗（首次登录 admin 触发） -->
+    <div id="forcePwdModal" class="pwd-modal-overlay" style="display:none;">
+        <div class="pwd-modal">
+            <h3><i class="fas fa-key"></i> 首次登录，请修改密码</h3>
+            <p class="force-pwd-tip">管理员初始密码即将过期，请设置新密码后继续使用。</p>
+            <div class="pwd-modal-error" id="forcePwdError" style="display:none;"></div>
+            <form id="forcePwdForm">
+                <div class="pwd-field">
+                    <label>新密码</label>
+                    <div class="pwd-input-wrap">
+                        <input type="password" id="forceNewPwd" required>
+                        <i class="fas fa-eye pwd-eye" onclick="togglePwd(this)" title="显示/隐藏"></i>
+                    </div>
+                    <div class="pwd-hint">至少 8 位，同时包含字母和数字</div>
+                </div>
+                <div class="pwd-field">
+                    <label>确认新密码</label>
+                    <div class="pwd-input-wrap">
+                        <input type="password" id="forceConfirmPwd" required>
+                        <i class="fas fa-eye pwd-eye" onclick="togglePwd(this)" title="显示/隐藏"></i>
+                    </div>
+                </div>
+                <div class="pwd-actions">
+                    <button type="submit" class="cfg-btn cfg-btn-save">确认修改</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/js/login.js"></script>
+<script>
+(async function() {
+    try {
+        const res = await fetch('/api/info');
+        const json = await res.json();
+        const name = (json.data && json.data.sys_name) || 'AI 数字员工';
+        const title = name;
+        document.getElementById('pageTitle').textContent = title + ' - 登录';
+        document.getElementById('sysNameHeader').textContent = title;
+    } catch (_) {}
+})();
+</script>
+</body>
+</html>
