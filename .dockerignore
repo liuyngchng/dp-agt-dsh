@@ -10,6 +10,7 @@ data/*.db-shm
 data/*.db-wal
 data/secrets.key
 data/cfg.yml
+data/mock.json
 data/logs/
 data/tasks/
 data/dsh-home/
@@ -23,8 +24,8 @@ data/dsh-home/
 # macOS
 .DS_Store
 
-# 自身
-Dockerfile
-.dockerignore
-build.sh
-fetch-dsh-runtime.sh
+# 构建脚本自身（不进镜像）
+build/Dockerfile
+build/build.sh
+build/deploy.sh
+build/fetch-dsh-runtime.sh

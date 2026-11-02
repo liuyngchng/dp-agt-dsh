@@ -18,14 +18,15 @@ RUN apt-get update && \
 WORKDIR /src
 
 # 先复制 go.mod / go.sum，利用缓存
-COPY go.mod go.sum* ./
-RUN go mod download || true
+COPY go.mod go.sum ./
+RUN GOPROXY=https://goproxy.cn,direct go mod download || true
 
 # 复制源码
 COPY . .
 
-# 构建
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/dp-agt-dsh ./cmd/dp-agt-dsh
+# 构建（CGO 需要 gcc，SQLite 走纯 Go 驱动则不需要；这里保留 CGO 兼容）
+RUN GOPROXY=https://goproxy.cn,direct CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /out/dp-agt-dsh ./cmd/dp-agt-dsh
 
 # ---------- 阶段 2: 运行时 ----------
 FROM ubuntu:24.04
@@ -57,10 +58,10 @@ RUN mkdir -p /app/data/tasks /app/data/logs /app/data/dsh-home
 
 # 复制配置模板
 COPY data/cfg.yml.template /app/data/cfg.yml.template
+COPY data/cfg.csv.template /app/data/cfg.csv.template
 
 EXPOSE 20001
 
 ENV DATA_DIR=/app/data
-ENV GIN_MODE=release
 
 CMD ["/app/dp-agt-dsh"]

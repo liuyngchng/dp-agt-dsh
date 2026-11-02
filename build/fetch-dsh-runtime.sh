@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # 下载 dsh 运行时二进制（从 PyPI 提取）
-# 用法: ./fetch-dsh-runtime.sh
+# 用法: ./build/fetch-dsh-runtime.sh
 set -euo pipefail
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-BIN_DIR="./bin"
+BIN_DIR="$PROJECT_ROOT/bin"
 PLATFORM="manylinux_2_28_x86_64"
 BIN_NAME="deepseek-harness-sdk-runtime-linux-x64"
 RG_NAME="deepseek-harness-sdk-runtime-linux-x64-rg"
