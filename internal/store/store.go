@@ -105,6 +105,7 @@ func (s *Store) migrate() error {
 			role            INTEGER DEFAULT 0,
 			note            TEXT DEFAULT '',
 			must_change_pwd INTEGER DEFAULT 0,
+			user_version    INTEGER DEFAULT 1,
 			created_at      TEXT,
 			created_ts      INTEGER
 		)`,
@@ -120,6 +121,9 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// 兼容旧库：补列
+	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN user_version INTEGER DEFAULT 1`)
+
 	// 种子 admin
 	var count int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
@@ -129,7 +133,7 @@ func (s *Store) migrate() error {
 		hash, _ := HashPassword("admin")
 		now := time.Now().UnixMilli()
 		_, _ = s.db.Exec(
-			"INSERT INTO users (username, password_hash, role, note, must_change_pwd, created_at, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (username, password_hash, role, note, must_change_pwd, user_version, created_at, created_ts) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
 			"admin", hash, 1, "默认管理员", 1, timeFmt(now), now,
 		)
 		log.Println("[store] seeded default admin user (admin/admin)")
@@ -627,6 +631,14 @@ func (s *Store) ListConfigKeys() []string {
 	return out
 }
 
+func (s *Store) AllConfigKeysSet() map[string]bool {
+	set := make(map[string]bool)
+	for _, k := range s.ListConfigKeys() {
+		set[k] = true
+	}
+	return set
+}
+
 func (s *Store) ClearConfigRows() error {
 	_, err := s.db.Exec("DELETE FROM prompt_config")
 	return err
@@ -654,13 +666,15 @@ type User struct {
 	Role          int    `json:"role"`
 	Note          string `json:"note"`
 	MustChangePwd bool   `json:"must_change_pwd"`
+	UserVersion   int    `json:"user_version"`
 	CreatedAt     string `json:"created_at"`
+	CreatedTs     int64  `json:"created_ts"`
 }
 
 func (s *Store) GetUser(username string) (*User, error) {
-	row := s.db.QueryRow("SELECT id, username, password_hash, role, COALESCE(note,''), COALESCE(must_change_pwd,0), COALESCE(created_at,'') FROM users WHERE username = ?", username)
+	row := s.db.QueryRow("SELECT id, username, password_hash, role, COALESCE(note,''), COALESCE(must_change_pwd,0), COALESCE(user_version,1), COALESCE(created_at,''), COALESCE(created_ts,0) FROM users WHERE username = ?", username)
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Note, &u.MustChangePwd, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Note, &u.MustChangePwd, &u.UserVersion, &u.CreatedAt, &u.CreatedTs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -668,7 +682,7 @@ func (s *Store) GetUser(username string) (*User, error) {
 }
 
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query("SELECT id, username, password_hash, role, COALESCE(note,''), COALESCE(must_change_pwd,0), COALESCE(created_at,'') FROM users ORDER BY id")
+	rows, err := s.db.Query("SELECT id, username, password_hash, role, COALESCE(note,''), COALESCE(must_change_pwd,0), COALESCE(user_version,1), COALESCE(created_at,''), COALESCE(created_ts,0) FROM users ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -676,12 +690,55 @@ func (s *Store) ListUsers() ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Note, &u.MustChangePwd, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Note, &u.MustChangePwd, &u.UserVersion, &u.CreatedAt, &u.CreatedTs); err != nil {
 			continue
 		}
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+func (s *Store) CreateUser(username, hash string, role int, note string) (bool, error) {
+	now := time.Now().UnixMilli()
+	_, err := s.db.Exec(
+		"INSERT INTO users (username, password_hash, role, note, must_change_pwd, user_version, created_at, created_ts) VALUES (?, ?, ?, ?, 0, 1, ?, ?)",
+		username, hash, role, note, timeFmt(now), now,
+	)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) DeleteUser(username string) bool {
+	result, err := s.db.Exec("DELETE FROM users WHERE username = ?", username)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
+}
+
+func (s *Store) UpdatePassword(username, hash string) bool {
+	result, err := s.db.Exec("UPDATE users SET password_hash = ?, user_version = user_version + 1 WHERE username = ?", hash, username)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
+}
+
+func (s *Store) ClearMustChangePwd(username string) bool {
+	result, err := s.db.Exec("UPDATE users SET must_change_pwd = 0 WHERE username = ?", username)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
+}
+
+func (s *Store) IncrementUserVersion(username string) {
+	_, _ = s.db.Exec("UPDATE users SET user_version = user_version + 1 WHERE username = ?", username)
 }
 
 // ── Cleanup ──

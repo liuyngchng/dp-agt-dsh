@@ -32,30 +32,24 @@ func NewAuth(cfg *config.Config, s *store.Store) *Auth {
 }
 
 // APITokenMiddleware 外部系统调用认证
+// 仅当 config 表 api_auth_enabled == "1" 且配置了 api_auth_token 时启用校验；
+// 否则放行（与 dp-agt 的 fail-open 语义一致，未配置认证时不阻塞业务）。
 func (a *Auth) APITokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := ""
-		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			token = strings.TrimPrefix(h, "Bearer ")
-		} else if h := r.Header.Get("X-Api-Key"); h != "" {
-			token = h
-		}
+		dbEnabled := a.store.GetConfig("api_auth_enabled") == "1"
+		dbToken := a.store.GetConfig("api_auth_token")
 
-		if token == "" {
-			// 未配置 API Token 则放行（兼容未启用认证的场景）
-			expected := a.store.GetConfig("api_auth_token")
-			if expected == "" {
-				next.ServeHTTP(w, r)
+		if dbEnabled && dbToken != "" {
+			token := ""
+			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+				token = strings.TrimPrefix(h, "Bearer ")
+			} else if h := r.Header.Get("X-Api-Key"); h != "" {
+				token = h
+			}
+			if token != dbToken {
+				writeJSON(w, http.StatusUnauthorized, resp(1003, "Unauthorized: 无效或缺失的 X-Api-Key / Authorization Bearer Token", "", "", nil))
 				return
 			}
-			writeJSON(w, http.StatusUnauthorized, resp(1003, "API Token 缺失", "", "", nil))
-			return
-		}
-
-		expected := a.store.GetConfig("api_auth_token")
-		if expected != "" && token != expected {
-			writeJSON(w, http.StatusUnauthorized, resp(1003, "API Token 无效", "", "", nil))
-			return
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -68,14 +62,27 @@ func (a *Auth) WebMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		cookie, err := r.Cookie(CookieName)
-		if err != nil {
+		sess := a.sessionFromRequest(r)
+		if sess == nil {
+			// API 请求返回 JSON 401，页面请求重定向到 /login
+			if strings.HasPrefix(r.URL.Path, "/admin/") {
+				writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "请先登录"})
+				return
+			}
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		sess, ok := a.tokens[cookie.Value]
-		if !ok || time.Now().After(sess.ExpireAt) {
-			http.Redirect(w, r, "/login", http.StatusFound)
+		ctx := context.WithValue(r.Context(), userKey{}, sess)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// WebAPIMiddleware 内部 API 登录态校验：未登录返回 JSON 401，不跳转页面
+func (a *Auth) WebAPIMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess := a.sessionFromRequest(r)
+		if sess == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "请先登录"})
 			return
 		}
 		ctx := context.WithValue(r.Context(), userKey{}, sess)

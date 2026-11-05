@@ -100,6 +100,38 @@
                 </div>
             </div>
 
+            <!-- ========== 记忆管理 ========== -->
+            <div class="cfg-section" id="section-memory">
+                <h2><i class="fas fa-database"></i> 记忆管理</h2>
+                <p>上传公司业务背景知识（领导分工、部门职责、业务流程等）作为 AI 智能体的按需记忆。文件存入 <code>data/memory/</code>，下一个新任务生效。支持 <code>.md</code> 单文件。</p>
+
+                <div style="margin:20px 0;">
+                    <div style="display:flex;align-items:center;gap:12px;max-width:640px;">
+                        <input type="file" id="memoryFileInput" accept=".md" style="flex:1;">
+                        <button class="cfg-btn cfg-btn-save" onclick="uploadMemory()"><i class="fas fa-upload"></i> 上传</button>
+                    </div>
+                    <div id="memoryResult" style="margin-top:12px;"></div>
+                </div>
+
+                <div class="table-scroll" style="margin-top:24px;">
+                    <table class="result-table">
+                        <thead><tr><th class="col-seq">序号</th><th>文件名</th><th>标题</th><th>说明</th><th>大小</th><th class="col-action">操作</th></tr></thead>
+                        <tbody id="memoryTbody"><tr><td colspan="6" style="text-align:center;color:#999;">加载中...</td></tr></tbody>
+                    </table>
+                </div>
+
+                <!-- 记忆预览弹窗 -->
+                <div id="memoryModal" class="modal-overlay">
+                    <div class="modal-lg" style="display:flex;flex-direction:column;">
+                        <h3 style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                            <span id="memoryModalTitle"><i class="fas fa-file-alt"></i> 记忆文件</span>
+                            <button type="button" class="cfg-btn cfg-btn-reset" onclick="closeMemoryModal()" style="margin-left:auto;">关闭</button>
+                        </h3>
+                        <pre id="memoryContent" style="flex:1;min-height:0;overflow:auto;margin-top:16px;padding:14px;background:#2d2d2d;color:#f8f8f2;border-radius:8px;font-size:0.82rem;font-family:'SF Mono','Consolas',monospace;white-space:pre-wrap;word-break:break-all;"></pre>
+                    </div>
+                </div>
+            </div>
+
             <!-- ========== 操作模拟 ========== -->
             <div class="cfg-section" id="section-simulate">
                 <h2><i class="fas fa-flask"></i> 操作模拟</h2>
@@ -385,6 +417,7 @@ async function initNav() {
                 const section = document.getElementById('section-' + tab.dataset.tab);
                 if (section) section.classList.add('active');
                 if (tab.dataset.tab === 'interfaces') { loadInterfaces(); loadConfigKeys(); loadPreview(); }
+                else if (tab.dataset.tab === 'memory') loadMemories();
                 else if (tab.dataset.tab === 'simulate') loadSimulateTab();
                 else if (tab.dataset.tab === 'tasks') loadTasks();
                 else if (tab.dataset.tab === 'sys') loadSysConfig();
@@ -585,6 +618,88 @@ async function loadPreview() {
     `).join('');
 }
 
+// ==== 记忆管理 ====
+async function loadMemories() {
+    const tbody = document.getElementById('memoryTbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr>';
+    try {
+        const res = await fetch(API + '/memory');
+        const json = await res.json();
+        const items = (json.data && json.data.items) || [];
+        if (items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无记忆文件，请上传业务知识文档</td></tr>';
+            return;
+        }
+        tbody.innerHTML = items.map((m, i) => {
+            const name = escHtml(m.filename);
+            const title = escHtml(m.title || '-');
+            const desc = escHtml(m.description || '-');
+            const size = m.size ? (m.size < 1024 ? m.size + ' B' : (m.size / 1024).toFixed(1) + ' KB') : '-';
+            return '<tr><td class="col-seq">' + (i + 1) + '</td>' +
+                '<td><code style="font-size:0.8rem;">' + name + '</code></td>' +
+                '<td>' + title + '</td>' +
+                '<td>' + desc + '</td>' +
+                '<td>' + size + '</td>' +
+                '<td class="col-action">' +
+                '<button class="cfg-btn-sm cfg-btn-icon cfg-btn-icon-primary" onclick="previewMemory(\'' + escJs(m.filename) + '\')" title="预览" style="margin-right:4px;"><i class="fas fa-eye"></i></button>' +
+                '<button class="cfg-btn-danger-sm" onclick="deleteMemoryFile(\'' + escJs(m.filename) + '\')" title="删除"><i class="fas fa-trash-alt"></i></button>' +
+                '</td></tr>';
+        }).join('');
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#e53e3e;padding:24px;">加载失败: ' + escHtml(err.message) + '</td></tr>';
+    }
+}
+
+function escJs(s) {
+    if (!s) return '';
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
+async function uploadMemory() {
+    const input = document.getElementById('memoryFileInput');
+    const file = input.files[0];
+    if (!file) return toast('请选择 .md 文件', 'error');
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(API + '/memory/upload', { method: 'POST', body: fd });
+    const json = await res.json();
+    const resultEl = document.getElementById('memoryResult');
+    if (json.code !== 0) {
+        resultEl.innerHTML = '<span style="color:#e53935;">✗ ' + escHtml(json.message || '上传失败') + '</span>';
+        return;
+    }
+    resultEl.innerHTML = '<span style="color:#2e7d32;">✓ 已上传</span>';
+    input.value = '';
+    toast('记忆文件已上传');
+    loadMemories();
+}
+
+async function previewMemory(filename) {
+    try {
+        const res = await fetch(API + '/memory/' + encodeURIComponent(filename) + '/content');
+        const json = await res.json();
+        if (json.code !== 0) return toast(json.message || '读取失败', 'error');
+        document.getElementById('memoryModalTitle').innerHTML = '<i class="fas fa-file-alt"></i> ' + escHtml(filename);
+        document.getElementById('memoryContent').textContent = json.data.content || '';
+        document.getElementById('memoryModal').classList.add('show');
+    } catch (err) { toast('读取失败: ' + err.message, 'error'); }
+}
+
+function closeMemoryModal() {
+    document.getElementById('memoryModal').classList.remove('show');
+}
+
+async function deleteMemoryFile(filename) {
+    if (!confirm('确定删除记忆文件 ' + filename + '？\n删除后下一个新任务将不再能查到此知识。')) return;
+    try {
+        const res = await fetch(API + '/memory/' + encodeURIComponent(filename), { method: 'DELETE' });
+        const json = await res.json();
+        if (json.code === 0) { toast('已删除', 'success'); loadMemories(); }
+        else { toast(json.message || '删除失败', 'error'); }
+    } catch (err) { toast('删除失败: ' + err.message, 'error'); }
+}
+
 // ==== Tasks (server-side pagination) ====
 const TASKS_PAGE_SIZE = 10;
 let _tasksPage = 1;
@@ -676,6 +791,7 @@ function taskDetailHtml(t) {
 document.getElementById('auditDetailModal').addEventListener('click', function(e) { if (e.target === this) closeAuditDetail(); });
 document.getElementById('streamModal').addEventListener('click', function(e) { if (e.target === this) closeStreamModal(); });
 document.getElementById('chatModal').addEventListener('click', function(e) { if (e.target === this) closeChatModal(); });
+document.getElementById('memoryModal').addEventListener('click', function(e) { if (e.target === this) closeMemoryModal(); });
 
 // Init
 initNav();
@@ -709,6 +825,7 @@ document.addEventListener('keydown', function(e) {
         if (document.getElementById('streamModal').classList.contains('show')) closeStreamModal();
         if (document.getElementById('auditDetailModal').classList.contains('show')) closeAuditDetail();
         if (document.getElementById('chatModal').classList.contains('show')) closeChatModal();
+	        if (document.getElementById('memoryModal').classList.contains('show')) closeMemoryModal();
     }
 });
 

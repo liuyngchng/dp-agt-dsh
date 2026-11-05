@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"dp-agt-dsh/internal/config"
@@ -62,6 +63,7 @@ func (h *AdminHandler) HandleNav(w http.ResponseWriter, r *http.Request) {
 	if isAdmin {
 		tabs = append(tabs,
 			tab{"interfaces", "fa-brain", "模板管理"},
+			tab{"memory", "fa-database", "记忆管理"},
 			tab{"simulate", "fa-flask", "操作模拟"},
 			tab{"tasks", "fa-list-alt", "任务监控"},
 		)
@@ -90,9 +92,14 @@ func (h *AdminHandler) HandleServerInfo(w http.ResponseWriter, r *http.Request) 
 	if h.cfg.Server.CertFile != "" && h.cfg.Server.KeyFile != "" {
 		protocol = "https"
 	}
+	host := h.cfg.Server.SelfIP
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "data": map[string]interface{}{
-		"port":     h.cfg.Server.Port,
 		"protocol": protocol,
+		"host":     host,
+		"port":     h.cfg.Server.Port,
 	}})
 }
 
@@ -107,8 +114,8 @@ func (h *AdminHandler) HandleListInterfaces(w http.ResponseWriter, r *http.Reque
 	var out []map[string]interface{}
 	for _, pf := range promptFiles {
 		out = append(out, map[string]interface{}{
-			"path": pf.Path,
-			"name": pf.Name,
+			"path":     pf.Path,
+			"name":     pf.Name,
 			"filename": pf.Filename,
 		})
 	}
@@ -124,10 +131,16 @@ func (h *AdminHandler) HandleSimulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path, _ := body["path"].(string)
-	payload, _ := body["payload"].(map[string]interface{})
+	path, _ := body["interface_path"].(string)
 	if path == "" {
-		writeJSON(w, http.StatusBadRequest, resp(1001, "缺少 path", "", "", nil))
+		path, _ = body["path"].(string) // 兼容旧字段
+	}
+	payload, _ := body["request_body"].(map[string]interface{})
+	if payload == nil {
+		payload, _ = body["payload"].(map[string]interface{}) // 兼容旧字段
+	}
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, resp(1001, "缺少 interface_path", "", "", nil))
 		return
 	}
 	if payload == nil {
@@ -166,18 +179,51 @@ func (h *AdminHandler) HandleSimulate(w http.ResponseWriter, r *http.Request) {
 // ── 任务监控 ──
 
 func (h *AdminHandler) HandleAdminTasks(w http.ResponseWriter, r *http.Request) {
+	page := atoiDefault(r.URL.Query().Get("page"), 1)
+	pageSize := atoiDefault(r.URL.Query().Get("page_size"), 10)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
 	taskID := r.URL.Query().Get("taskid")
 	linkID := r.URL.Query().Get("linkid")
-	offset := 0
-	limit := 50
-
-	tasks, total, err := h.store.ListTasksPaged(taskID, linkID, offset, limit)
+	tasks, total, err := h.store.ListTasksPaged(taskID, linkID, offset, pageSize)
 	if err != nil {
 		writeJSON(w, 500, resp(5000, err.Error(), "", "", nil))
 		return
 	}
+
+	type taskView struct {
+		TaskID     string `json:"task_id"`
+		LinkID     string `json:"linkid"`
+		SessionID  string `json:"session_id"`
+		Title      string `json:"title"`
+		Path       string `json:"path"`
+		Status     string `json:"status"`
+		ErrorMsg   string `json:"error_message"`
+		CreatedAt  string `json:"created_at"`
+		FinishedAt string `json:"finished_at"`
+	}
+	views := make([]taskView, 0, len(tasks))
+	for _, t := range tasks {
+		views = append(views, taskView{
+			TaskID:     t.TaskID,
+			LinkID:     t.LinkID,
+			SessionID:  t.SessionID,
+			Title:      extractTitle(t.RequestBody),
+			Path:       t.Path,
+			Status:     string(t.Status),
+			ErrorMsg:   t.ErrorMessage,
+			CreatedAt:  t.CreatedAt,
+			FinishedAt: t.FinishedAt,
+		})
+	}
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-		"items": tasks, "total": total,
+		"items": views, "total": total, "page": page, "page_size": pageSize,
 	}))
 }
 
@@ -188,13 +234,37 @@ func (h *AdminHandler) HandleAdminTaskDetail(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 404, resp(1001, "任务不存在: "+taskID, "", "", nil))
 		return
 	}
-	writeJSON(w, 200, resp(0, "success", taskID, task.LinkID, task))
+	writeJSON(w, 200, resp(0, "success", taskID, task.LinkID, map[string]interface{}{
+		"task_id":          task.TaskID,
+		"linkid":           task.LinkID,
+		"session_id":       task.SessionID,
+		"title":            extractTitle(task.RequestBody),
+		"path":             task.Path,
+		"status":           string(task.Status),
+		"request_body":     mustParseJSON(task.RequestBody),
+		"request_response": mustParseJSON(task.RequestResponse),
+		"prompt":           task.Prompt,
+		"sdk_output":       task.SdkOutput,
+		"sdk_trace":        task.SdkTrace,
+		"error_message":    task.ErrorMessage,
+		"created_at":       task.CreatedAt,
+		"finished_at":      task.FinishedAt,
+	}))
 }
 
 // ── SSE 流 ──
 
 func (h *AdminHandler) HandleSessionStream(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		// 也支持 /admin/sessions/:session_id/stream 形式
+		path := strings.TrimPrefix(r.URL.Path, "/admin/sessions/")
+		path = strings.TrimSuffix(path, "/stream")
+		path = strings.TrimSuffix(path, "/")
+		if path != "" && path != r.URL.Path {
+			sessionID = path
+		}
+	}
 	if sessionID == "" {
 		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
 		return
@@ -235,12 +305,50 @@ func (h *AdminHandler) HandleSessionStream(w http.ResponseWriter, r *http.Reques
 // ── 审计 (audit) ──
 
 func (h *AdminHandler) HandleAudit(w http.ResponseWriter, r *http.Request) {
-	tasks, err := h.store.ListActiveTasks()
+	page := atoiDefault(r.URL.Query().Get("page"), 1)
+	pageSize := atoiDefault(r.URL.Query().Get("page_size"), 10)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	linkID := strings.TrimSpace(r.URL.Query().Get("linkid"))
+
+	tasks, total, err := h.store.ListTasksPaged(taskID, linkID, offset, pageSize)
 	if err != nil {
-		tasks = nil
+		writeJSON(w, 500, resp(5000, err.Error(), "", "", nil))
+		return
+	}
+
+	type auditView struct {
+		TaskID     string `json:"task_id"`
+		LinkID     string `json:"linkid"`
+		SessionID  string `json:"session_id"`
+		Title      string `json:"title"`
+		Path       string `json:"path"`
+		Status     string `json:"status"`
+		CreatedAt  string `json:"created_at"`
+		FinishedAt string `json:"finished_at"`
+	}
+	views := make([]auditView, 0, len(tasks))
+	for _, t := range tasks {
+		views = append(views, auditView{
+			TaskID:     t.TaskID,
+			LinkID:     t.LinkID,
+			SessionID:  t.SessionID,
+			Title:      extractTitle(t.RequestBody),
+			Path:       t.Path,
+			Status:     string(t.Status),
+			CreatedAt:  t.CreatedAt,
+			FinishedAt: t.FinishedAt,
+		})
 	}
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-		"tasks": tasks,
+		"items": views, "total": total, "page": page, "page_size": pageSize,
 	}))
 }
 
@@ -251,7 +359,22 @@ func (h *AdminHandler) HandleAuditDetail(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, 404, resp(1001, "任务不存在: "+taskID, "", "", nil))
 		return
 	}
-	writeJSON(w, 200, resp(0, "success", taskID, task.LinkID, task))
+	writeJSON(w, 200, resp(0, "success", taskID, task.LinkID, map[string]interface{}{
+		"task_id":          task.TaskID,
+		"linkid":           task.LinkID,
+		"session_id":       task.SessionID,
+		"title":            extractTitle(task.RequestBody),
+		"path":             task.Path,
+		"status":           string(task.Status),
+		"error_message":    task.ErrorMessage,
+		"created_at":       task.CreatedAt,
+		"finished_at":      task.FinishedAt,
+		"request_body":     mustParseJSON(task.RequestBody),
+		"request_response": mustParseJSON(task.RequestResponse),
+		"prompt":           task.Prompt,
+		"sdk_output":       task.SdkOutput,
+		"sdk_trace":        task.SdkTrace,
+	}))
 }
 
 // ── 系统设置 ──
@@ -262,23 +385,41 @@ func (h *AdminHandler) HandleSysConfig(w http.ResponseWriter, r *http.Request) {
 		name = "AI 数字员工"
 	}
 	token := h.store.GetConfig("api_auth_token")
-	authEnabled := token != ""
+	authEnabled := h.store.GetConfig("api_auth_enabled") == "1"
 	writeJSON(w, 200, map[string]interface{}{"code": 0, "data": map[string]interface{}{
-		"sys_name": name,
-		"api_auth_enabled": authEnabled,
-		"api_auth_token": maskIfPresent(token),
+		"sys": map[string]interface{}{"name": name},
+		"api": map[string]interface{}{
+			"auth_enabled": authEnabled,
+			"auth_token":   token,
+		},
 	}})
 }
 
 func (h *AdminHandler) HandleSysConfigSave(w http.ResponseWriter, r *http.Request) {
-	var body map[string]interface{}
-	readJSON(r, &body)
-	if name, ok := body["sys_name"].(string); ok {
-		_ = h.store.SetConfig("sys.name", name, "系统名称")
+	var body struct {
+		Sys struct {
+			Name string `json:"name"`
+		} `json:"sys"`
+		API struct {
+			AuthEnabled bool   `json:"auth_enabled"`
+			AuthToken   string `json:"auth_token"`
+		} `json:"api"`
 	}
-	if token, ok := body["api_auth_token"].(string); ok && token != "" && !strings.HasPrefix(token, "**") {
-		_ = h.store.SetConfig("api_auth_token", token, "API认证Token")
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, resp(1001, "无效的请求体", "", "", nil))
+		return
 	}
+	if body.Sys.Name != "" {
+		_ = h.store.SetConfig("sys.name", strings.TrimSpace(body.Sys.Name), "系统名称")
+	}
+	if body.API.AuthToken != "" {
+		// Don't save the masked placeholder from the frontend
+		if !strings.HasPrefix(body.API.AuthToken, "****") && !strings.HasPrefix(body.API.AuthToken, "**") {
+			_ = h.store.SetConfig("api_auth_token", body.API.AuthToken, "对外 API 认证 Token")
+		}
+	}
+	// 保存 api_auth_enabled 开关状态
+	_ = h.store.SetConfig("api_auth_enabled", boolToStr(body.API.AuthEnabled), "对外 API 认证开关")
 	writeJSON(w, 200, resp(0, "保存成功", "", "", nil))
 }
 
@@ -286,14 +427,78 @@ func (h *AdminHandler) HandleSysConfigSave(w http.ResponseWriter, r *http.Reques
 
 func (h *AdminHandler) HandleUsers(w http.ResponseWriter, r *http.Request) {
 	users, _ := h.store.ListUsers()
-	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"users": users}))
+	type userView struct {
+		ID        int    `json:"id"`
+		UserName  string `json:"user_name"`
+		Role      int    `json:"role"`
+		Note      string `json:"note"`
+		CreatedAt string `json:"created_at"`
+	}
+	views := make([]userView, 0, len(users))
+	for _, u := range users {
+		views = append(views, userView{ID: u.ID, UserName: u.Username, Role: u.Role, Note: u.Note, CreatedAt: u.CreatedAt})
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"users": views}))
+}
+
+func (h *AdminHandler) HandleUserCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UserName string `json:"user_name"`
+		UserPwd  string `json:"user_pwd"`
+		Role     int    `json:"role"`
+		Note     string `json:"note"`
+	}
+	if err := readJSON(r, &body); err != nil || body.UserName == "" || body.UserPwd == "" {
+		writeJSON(w, 400, resp(1001, "用户名和密码不能为空", "", "", nil))
+		return
+	}
+	if err := validatePasswordStrength(body.UserPwd); err != "" {
+		writeJSON(w, 400, resp(1001, err, "", "", nil))
+		return
+	}
+	if existing, _ := h.store.GetUser(body.UserName); existing != nil {
+		writeJSON(w, 409, resp(1001, "用户名已存在", "", "", nil))
+		return
+	}
+	hash, err := store.HashPassword(body.UserPwd)
+	if err != nil {
+		writeJSON(w, 500, resp(1001, "创建失败", "", "", nil))
+		return
+	}
+	role := 0
+	if body.Role == 1 {
+		role = 1
+	}
+	if _, err := h.store.CreateUser(body.UserName, hash, role, body.Note); err != nil {
+		writeJSON(w, 500, resp(1001, "创建失败", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "添加成功", "", "", nil))
+}
+
+func (h *AdminHandler) HandleUserDelete(w http.ResponseWriter, r *http.Request) {
+	username := strings.TrimPrefix(r.URL.Path, "/admin/users/")
+	if username == "" {
+		writeJSON(w, 400, resp(1001, "缺少用户名", "", "", nil))
+		return
+	}
+	if username == "admin" {
+		writeJSON(w, 400, resp(1001, "不能删除 admin 用户", "", "", nil))
+		return
+	}
+	if !h.store.DeleteUser(username) {
+		writeJSON(w, 404, resp(1001, "用户不存在", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
 }
 
 // ── 配置 CSV ──
 
 func (h *AdminHandler) HandlePromptConfig(w http.ResponseWriter, r *http.Request) {
-	rows := h.store.ListConfigRows(false)
-	writeJSON(w, 200, map[string]interface{}{"code": 0, "data": rows})
+	reveal := r.URL.Query().Get("reveal") == "1"
+	rows := h.store.ListConfigRows(reveal)
+	writeJSON(w, 200, map[string]interface{}{"code": 0, "data": map[string]interface{}{"rows": rows, "count": len(rows)}})
 }
 
 func (h *AdminHandler) HandlePromptConfigTemplate(w http.ResponseWriter, r *http.Request) {
@@ -380,15 +585,178 @@ func (h *AdminHandler) HandlePromptTarDownload(w http.ResponseWriter, r *http.Re
 func (h *AdminHandler) HandlePromptPreview(w http.ResponseWriter, r *http.Request) {
 	_, files := engine.ScanPromptsDir(h.cfg.Sys.DataDir)
 	type fv struct {
-		Filename string `json:"filename"`
-		Path     string `json:"path"`
-		Content  string `json:"content"`
+		File string `json:"file"`
+		Raw  string `json:"raw"`
 	}
 	var out []fv
 	for _, pf := range files {
-		out = append(out, fv{Filename: pf.Filename, Path: pf.Path, Content: pf.Content})
+		out = append(out, fv{File: pf.Filename, Raw: pf.Content})
 	}
-	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": out}))
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"previews": out}))
+}
+
+// HandlePromptTarUpload 上传 tar/zip 包并替换 prompts/ 目录
+func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeJSON(w, 400, resp(1001, "请求体太大", "", "", nil))
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, resp(1001, "缺少上传文件", "", "", nil))
+		return
+	}
+	defer file.Close()
+
+	// 检查 CSV 已配置
+	if len(h.store.ListConfigRows(false)) == 0 {
+		writeJSON(w, 400, resp(1001, "请先上传 CSV 配置文件（步骤 1），再进行步骤 2", "", "", nil))
+		return
+	}
+	validKeys := h.store.AllConfigKeysSet()
+	builtinKeys := []string{"request.body", "request.linkid", "request.files",
+		"request.form_data", "request.approval_history"}
+	for _, k := range builtinKeys {
+		validKeys[k] = true
+	}
+
+	buf, err := io.ReadAll(file)
+	if err != nil {
+		writeJSON(w, 400, resp(1001, "读取文件失败", "", "", nil))
+		return
+	}
+
+	files, extractErr := extractArchive(buf, hdr.Filename)
+	if extractErr != "" {
+		writeJSON(w, 400, resp(1001, extractErr, "", "", nil))
+		return
+	}
+	if files == nil {
+		writeJSON(w, 400, resp(1001, "无法解压文件。支持的格式：.tar / .tar.gz / .tgz / .zip", "", "", nil))
+		return
+	}
+	if len(files) == 0 {
+		writeJSON(w, 400, resp(1001, "包内没有 .md 文件", "", "", nil))
+		return
+	}
+
+	// 校验占位符
+	var errors []string
+	rePH := regexp.MustCompile(`\{\{([^}]+)\}\}`)
+	for name, content := range files {
+		for _, m := range rePH.FindAllStringSubmatch(content, -1) {
+			inner := strings.TrimSpace(m[1])
+			if strings.HasPrefix(inner, "section:") || strings.HasPrefix(inner, "request.") {
+				continue
+			}
+			if !validKeys[inner] {
+				errors = append(errors, name+": 占位符 {{"+inner+"}} 未在 CSV 中配置")
+			}
+		}
+	}
+	if len(errors) > 0 {
+		writeJSON(w, 400, map[string]interface{}{"code": 1001, "message": "占位符校验失败", "data": map[string]interface{}{"errors": errors}})
+		return
+	}
+
+	// 替换 prompts/ 目录
+	promptsDir := "prompts"
+	if _, err := os.Stat(promptsDir); err == nil {
+		os.RemoveAll(promptsDir)
+	}
+	os.MkdirAll(promptsDir, 0755)
+	for name, content := range files {
+		dest := filepath.Join(promptsDir, name)
+		os.MkdirAll(filepath.Dir(dest), 0755)
+		os.WriteFile(dest, []byte(content), 0644)
+	}
+
+	// 重新扫描并同步 interfaces
+	engine.InitPrompts(h.cfg.Sys.DataDir)
+	promptFiles, _ := engine.ScanPromptsDir(h.cfg.Sys.DataDir)
+	for _, pf := range promptFiles {
+		_ = h.store.UpsertInterface(pf.Path+"-id", pf.Name, pf.Path, "")
+	}
+
+	fileList := make([]string, 0, len(files))
+	for k := range files {
+		fileList = append(fileList, k)
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": fileList, "total": len(fileList)}))
+}
+
+// ── 记忆管理 ──
+
+func (h *AdminHandler) HandleMemoryList(w http.ResponseWriter, r *http.Request) {
+	items := engine.ListMemories(h.cfg.Sys.DataDir)
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"items": items, "count": len(items)}))
+}
+
+func (h *AdminHandler) HandleMemoryContent(w http.ResponseWriter, r *http.Request) {
+	filename := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/memory/"), "/content")
+	content, ok := engine.GetMemory(h.cfg.Sys.DataDir, filename)
+	if !ok {
+		writeJSON(w, 404, resp(1001, "记忆文件不存在", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"filename": filename, "content": content}))
+}
+
+func (h *AdminHandler) HandleMemoryUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeJSON(w, 400, resp(1001, "请求体太大", "", "", nil))
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, resp(1001, "缺少上传文件", "", "", nil))
+		return
+	}
+	defer file.Close()
+
+	// 还原中文文件名（multipart 按 latin1 解码）
+	filename := decodeUploadFilename(hdr.Filename)
+	if !strings.HasSuffix(strings.ToLower(filename), ".md") {
+		writeJSON(w, 400, resp(1001, "仅支持 .md 文件", "", "", nil))
+		return
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeJSON(w, 400, resp(1001, "读取文件失败", "", "", nil))
+		return
+	}
+	safe, err := engine.SaveMemory(h.cfg.Sys.DataDir, filename, string(data))
+	if err != nil {
+		writeJSON(w, 400, resp(1001, "保存失败: "+err.Error(), "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": []string{safe}, "total": 1}))
+}
+
+func (h *AdminHandler) HandleMemoryDelete(w http.ResponseWriter, r *http.Request) {
+	filename := strings.TrimPrefix(r.URL.Path, "/admin/memory/")
+	if ok := engine.DeleteMemory(h.cfg.Sys.DataDir, filename); !ok {
+		writeJSON(w, 404, resp(1001, "记忆文件不存在", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
+}
+
+// decodeUploadFilename 还原 multer/busboy 对中文文件名的 latin1→UTF-8 解码问题
+func decodeUploadFilename(name string) string {
+	if name == "" {
+		return name
+	}
+	// Go 的 multipart 已经按 UTF-8 解码，通常无需处理；这里兜底转一次（对纯 ASCII 无副作用）
+	return name
+}
+
+// HandleSessionMessages 一次性拉取会话历史（dsh 协议暂未实现 session/load，返回空列表占位）
+func (h *AdminHandler) HandleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+		"session_id": "",
+		"messages":   []interface{}{},
+	}))
 }
 
 // ── 任务审计 / trace / link log ──
@@ -576,6 +944,53 @@ func maskIfPresent(s string) string {
 	return s[:4] + "****" + s[len(s)-4:]
 }
 
+func atoiDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return def
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+func boolToStr(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// extractTitle 从 request_body JSON 中提取标题
+func extractTitle(requestBody string) string {
+	if requestBody == "" {
+		return "-"
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(requestBody), &obj); err != nil {
+		return "-"
+	}
+	if fd, ok := obj["form_data"].(map[string]interface{}); ok {
+		if t, _ := fd["title"].(string); t != "" {
+			return t
+		}
+		if t, _ := fd["标题"].(string); t != "" {
+			return t
+		}
+	}
+	if t, _ := obj["title"].(string); t != "" {
+		return t
+	}
+	if t, _ := obj["标题"].(string); t != "" {
+		return t
+	}
+	return "-"
+}
+
 func mustParseJSON(s string) interface{} {
 	if s == "" {
 		return nil
@@ -585,6 +1000,64 @@ func mustParseJSON(s string) interface{} {
 		return s
 	}
 	return v
+}
+
+// extractArchive 解压 .tar / .tar.gz / .tgz / .zip 包，返回 {filename: content}。
+// 顶层固定前缀 "prompts/" 会被剥离。失败时返回错误信息（files 为 nil 表示格式错误，为空表示可解压但无 .md）。
+func extractArchive(buf []byte, origName string) (map[string]string, string) {
+	lower := strings.ToLower(origName)
+
+	// ── Zip ──
+	if strings.HasSuffix(lower, ".zip") || (len(buf) >= 2 && buf[0] == 0x50 && buf[1] == 0x4b) {
+		zr, err := zip.NewReader(bytes.NewReader(buf), int64(len(buf)))
+		if err != nil {
+			return nil, "无法解压 zip 文件"
+		}
+		files := make(map[string]string)
+		for _, entry := range zr.File {
+			if entry.FileInfo().IsDir() || !strings.HasSuffix(entry.Name, ".md") {
+				continue
+			}
+			rc, err := entry.Open()
+			if err != nil {
+				continue
+			}
+			data, _ := io.ReadAll(rc)
+			rc.Close()
+			files[strings.TrimPrefix(entry.Name, "prompts/")] = string(data)
+		}
+		return files, ""
+	}
+
+	// ── Tar / Tar.gz ──
+	var raw io.Reader = bytes.NewReader(buf)
+	if strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz") ||
+		(len(buf) >= 2 && buf[0] == 0x1f && buf[1] == 0x8b) {
+		gzr, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return nil, "无法解压 gzip 文件"
+		}
+		defer gzr.Close()
+		raw = gzr
+	}
+
+	tr := tar.NewReader(raw)
+	files := make(map[string]string)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "无法解压 tar 文件"
+		}
+		if hdr.Typeflag == tar.TypeDir || !strings.HasSuffix(hdr.Name, ".md") {
+			continue
+		}
+		data, _ := io.ReadAll(tr)
+		files[strings.TrimPrefix(hdr.Name, "prompts/")] = string(data)
+	}
+	return files, ""
 }
 
 var _ = bytes.NewReader

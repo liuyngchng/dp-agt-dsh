@@ -143,7 +143,7 @@ func dig(obj map[string]interface{}, path string) interface{} {
 }
 
 // BuildClaudeMd 构建 CLAUDE.md 并把它写入工作目录
-func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}) error {
+func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}, dataDir string) error {
 	// 加载主模板
 	template := loadFile("claude-md.md")
 	if template == "" {
@@ -206,11 +206,34 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 		_ = v
 	}
 
+	// 注入业务知识记忆库索引
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	memItems := ListMemories(dataDir)
+	if len(memItems) > 0 {
+		var b strings.Builder
+		b.WriteString("\n## 业务知识记忆库\n\n")
+		b.WriteString("以下是可用的公司业务背景知识文件，均位于 `data/memory/` 目录。")
+		b.WriteString("当任务需要了解公司组织架构、领导班子分工、各部门职责范围或业务流程规则时，")
+		b.WriteString("使用 Read 工具读取对应文件（路径如 `data/memory/公司领导班子成员工作分工.md`）。\n\n")
+		b.WriteString("| 文件 | 说明 |\n")
+		b.WriteString("|------|------|\n")
+		for _, item := range memItems {
+			desc := item.Description
+			if desc == "" {
+				desc = item.Title
+			}
+			b.WriteString("| " + item.Filename + " | " + desc + " |\n")
+		}
+		template += b.String()
+	}
+
 	return os.WriteFile(filepath.Join(workDir, "CLAUDE.md"), []byte(template), 0644)
 }
 
 // BuildTaskDir 创建 workdir + 写入 CLAUDE.md
-func BuildTaskDir(workDir string, s *store.Store, rawCfg map[string]interface{}) (*string, error) {
+func BuildTaskDir(workDir string, s *store.Store, rawCfg map[string]interface{}, dataDir string) (*string, error) {
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir workdir: %w", err)
 	}
@@ -218,7 +241,7 @@ func BuildTaskDir(workDir string, s *store.Store, rawCfg map[string]interface{})
 	// 仅在目录中没有 CLAUDE.md 时写入（resume 场景）
 	claudeMdPath := filepath.Join(workDir, "CLAUDE.md")
 	if _, err := os.Stat(claudeMdPath); os.IsNotExist(err) {
-		if err := BuildClaudeMd(workDir, s, rawCfg); err != nil {
+		if err := BuildClaudeMd(workDir, s, rawCfg, dataDir); err != nil {
 			return nil, fmt.Errorf("write CLAUDE.md: %w", err)
 		}
 	}

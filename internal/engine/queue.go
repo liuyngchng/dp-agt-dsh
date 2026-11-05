@@ -26,7 +26,7 @@ type Queue struct {
 	pending []*QueueItem
 	running int
 
-	linkMu    sync.Mutex
+	linkMu     sync.Mutex
 	linkChains map[string]chan struct{}
 }
 
@@ -188,7 +188,7 @@ func (q *Queue) processItem(item *QueueItem) {
 
 	// 创建/复用 workdir
 	workDir := filepath.Join(q.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkID))
-	_, err := BuildTaskDir(workDir, q.store, q.cfg.RawConfig())
+	_, err := BuildTaskDir(workDir, q.store, q.cfg.RawConfig(), q.cfg.Sys.DataDir)
 	if err != nil {
 		q.failTask(taskID, "创建工作目录失败: "+err.Error())
 		return
@@ -330,7 +330,7 @@ type sseSub struct {
 }
 
 var (
-	sseMu  sync.Mutex
+	sseMu   sync.Mutex
 	sseSubs = make(map[string][]*sseSub)
 )
 
