@@ -42,10 +42,11 @@ sys:
 llm:
   # DeepSeek API 地址（留空则使用官方 API https://api.deepseek.com/anthropic）
   # 私有部署/代理: 填写网关地址，如 http://api-gate:16001
-  base_url: ""
+  # 需要使用支持 Anthropic Messages 协议的端点
+  base_url: "http://192.168.1.104:16002"
 
   # DeepSeek API Key（对应环境变量 DEEPSEEK_API_KEY）
-  auth_token: ""
+  auth_token: "sk-123456"
 
   # 默认模型（dsh 内置 catalog: deepseek-flash / deepseek-v4-pro）
   model: "deepseek-v4-pro"

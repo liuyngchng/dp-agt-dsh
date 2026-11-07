@@ -280,19 +280,19 @@ func (c *Client) ResumeSession(sessionID string) error {
 
 func (c *Client) sendQuery(sessionID, promptText string) (string, error) {
 	blocks := []ContentBlock{{Type: "text", Text: promptText}}
-	raw, err := c.request("session/query", SessionQueryParams{
+	raw, err := c.request("session/prompt", SessionPromptParams{
 		SessionID:     sessionID,
 		ContentBlocks: blocks,
 	})
 	if err != nil {
-		return "", fmt.Errorf("session/query: %w", err)
+		return "", fmt.Errorf("session/prompt: %w", err)
 	}
-	var result SessionQueryResult
+	var result SessionPromptResult
 	if err := json.Unmarshal(*raw, &result); err != nil {
-		return "", fmt.Errorf("parse session/query: %w", err)
+		return "", fmt.Errorf("parse session/prompt: %w", err)
 	}
-	if result.Kind != "prompt" || result.MessageID == "" {
-		return "", fmt.Errorf("%w: expected prompt, got kind=%q", ErrProtocolViolation, result.Kind)
+	if result.MessageID == "" {
+		return "", fmt.Errorf("%w: empty messageId", ErrProtocolViolation)
 	}
 	return result.MessageID, nil
 }

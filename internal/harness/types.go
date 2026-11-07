@@ -53,7 +53,7 @@ type ServerInfo struct {
 	Version string `json:"version"`
 }
 
-// ── session/query ──
+// ── session/prompt ──
 
 type ContentBlock struct {
 	Type     string `json:"type"`
@@ -62,14 +62,15 @@ type ContentBlock struct {
 	MimeType string `json:"mimeType,omitempty"`
 }
 
-type SessionQueryParams struct {
+type SessionPromptParams struct {
 	SessionID     string         `json:"sessionId"`
 	ContentBlocks []ContentBlock `json:"contentBlocks"`
 }
 
-type SessionQueryResult struct {
-	Kind    string `json:"kind"` // "prompt" | "command"
-	MessageID string `json:"messageId,omitempty"`
+// SessionPromptResult 是 dsh 0.2.1 协议的 session/prompt 返回：
+// 只有 messageId（0.2.2 的 session/query 才返回 kind: prompt/command）。
+type SessionPromptResult struct {
+	MessageID string `json:"messageId"`
 }
 
 // ── session/resume ──
