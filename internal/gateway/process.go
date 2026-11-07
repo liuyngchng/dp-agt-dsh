@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"dp-agt-dsh/internal/config"
@@ -42,6 +43,12 @@ func (h *ProcessHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if err := readJSON(r, &body); err != nil || body == nil {
 		writeJSON(w, http.StatusBadRequest, resp(1001, "请求体不能为空", "", "", nil))
 		return
+	}
+
+	// 打印请求日志；body 单独以缩进 JSON 输出，避免被 slog 文本格式二次转义
+	slog.Info("api_request", "method", r.Method, "path", interfacePath, "from_ip", r.RemoteAddr, "user_agent", r.Header.Get("User-Agent"))
+	if bodyJSON, err := json.MarshalIndent(body, "", "  "); err == nil && len(bodyJSON) > 0 {
+		fmt.Fprintf(os.Stderr, "  body: %s\n", string(bodyJSON))
 	}
 
 	// 校验接口

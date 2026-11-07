@@ -37,7 +37,11 @@ RUN apt-get update && \
         curl \
         jq \
         libstdc++6 \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+# 设置时区（中国标准时间 UTC+8），影响 Go 的 time.Now() 及日志/界面时间显示
+ENV TZ=Asia/Shanghai
 
 WORKDIR /app
 

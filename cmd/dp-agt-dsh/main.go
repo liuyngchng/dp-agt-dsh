@@ -23,6 +23,17 @@ import (
 )
 
 func main() {
+	// slog 默认使用 UTC 时间；改为本地时区
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				t := a.Value.Time()
+				return slog.String(slog.TimeKey, t.Local().Format(time.RFC3339))
+			}
+			return a
+		},
+	})))
+
 	slog.Info("==== AI 数字员工 (dsh) starting ====")
 
 	dataDir := os.Getenv("DATA_DIR")

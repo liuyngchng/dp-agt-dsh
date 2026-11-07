@@ -207,11 +207,9 @@ func (c *Client) Close() error {
 
 // Run 在指定 session 上执行 prompt，返回 RunResult
 func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification)) (*RunResult, error) {
-	messageID, err := c.sendQuery(sessionID, prompt)
-	if err != nil {
-		return nil, err
-	}
-
+	// 必须先订阅再发送查询：dsh 会在 session/prompt 响应之前就发出
+	// agent/inbox/spliced 事件（携带 messageId），后订阅会错过该事件，
+	// 导致 receivedPrompt 永远为 false，任务卡死在 status 等待上。
 	subID, subCh := c.subscribe(func(n Notification) bool {
 		if sid, _ := n.Payload["sessionId"].(string); sid == sessionID {
 			return true
@@ -220,6 +218,11 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 		return false
 	})
 	defer c.unsubscribe(subID)
+
+	messageID, err := c.sendQuery(sessionID, prompt)
+	if err != nil {
+		return nil, err
+	}
 
 	var events []SessionEvent
 	receivedPrompt := false

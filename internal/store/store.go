@@ -274,6 +274,11 @@ func (s *Store) GetLatestTaskByLinkid(linkID string) (*TaskLog, error) {
 	return s.getTaskByWhere("linkid = ? ORDER BY created_at DESC LIMIT 1", linkID)
 }
 
+// GetTaskBySessionID 按 session_id 查询任务（一个 session 可能对应多个 task，取最新）
+func (s *Store) GetTaskBySessionID(sessionID string) (*TaskLog, error) {
+	return s.getTaskByWhere("session_id = ? ORDER BY created_at DESC LIMIT 1", sessionID)
+}
+
 // ListTasksByLinkid 按 linkid 列出所有任务，按 finished_ts 升序（历史时间线用）
 func (s *Store) ListTasksByLinkid(linkID string, limit int) ([]TaskLog, error) {
 	if limit <= 0 {

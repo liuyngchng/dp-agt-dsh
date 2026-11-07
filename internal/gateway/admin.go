@@ -985,11 +985,102 @@ func decodeUploadFilename(name string) string {
 	return name
 }
 
-// HandleSessionMessages 一次性拉取会话历史（dsh 协议暂未实现 session/load，返回空列表占位）
+// HandleSessionMessages 一次性拉取会话历史
+// session_id 本身包含 task_id（格式 s-{task_id}），直接反查 task_logs 的 sdk_trace。
 func (h *AdminHandler) HandleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/sessions/")
+	path = strings.TrimSuffix(path, "/messages")
+	path = strings.TrimSuffix(path, "/")
+	sessionID := path
+	if sessionID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
+		return
+	}
+
+	// 从 session_id 反推 task_id（session 由 s-{task_id} 命名）
+	taskID := strings.TrimPrefix(sessionID, "s-")
+	task, _ := h.store.GetTaskLog(taskID)
+	if task == nil {
+		// 尝试按 session_id 字段查找
+		task, _ = h.store.GetTaskBySessionID(sessionID)
+	}
+	if task == nil {
+		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+			"session_id": sessionID,
+			"messages":   []interface{}{},
+		}))
+		return
+	}
+
+	// 从 sdk_trace 还原消息列表
+	trace := task.SdkTrace
+	if trace == "" {
+		// 任务尚未结束或无 trace，返回空
+		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+			"session_id": sessionID,
+			"messages":   []interface{}{},
+		}))
+		return
+	}
+
+	var rawEvents []map[string]interface{}
+	if err := json.Unmarshal([]byte(trace), &rawEvents); err != nil {
+		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+			"session_id": sessionID,
+			"messages":   []interface{}{},
+		}))
+		return
+	}
+
+	// dsh SessionEvent → 前端 formatSessionMessages 期望的 {type, message, timestamp}
+	// SessionEvent.Data 是 dsh 事件外壳：{type,seq,time,data:{...},surfaceOp}
+	// 真正的消息内容在外壳的 data 字段里：
+	//   user/message      → data.data.content 直接是内容
+	//   assistant/message → data.data.message.content 才是内容
+	messages := make([]interface{}, 0, len(rawEvents))
+	for _, ev := range rawEvents {
+		evType := getStr(ev, "type")
+		var role string
+		switch evType {
+		case "user/message":
+			role = "user"
+		case "assistant/message":
+			role = "assistant"
+		default:
+			continue // 跳过非对话事件
+		}
+
+		// 外层 = dsh 事件外壳，内层 = 真正的消息数据
+		outer, _ := ev["data"].(map[string]interface{})
+		payload, _ := outer["data"].(map[string]interface{})
+
+		// 前端期望 msg.message 有 content 字段
+		var message map[string]interface{}
+		if role == "assistant" {
+			if m, ok := payload["message"].(map[string]interface{}); ok {
+				message = m
+			} else {
+				message = payload
+			}
+		} else {
+			message = payload
+		}
+
+		msg := map[string]interface{}{
+			"type":    role,
+			"message": message,
+		}
+		if outer != nil {
+			if ts := outer["time"]; ts != nil {
+				msg["timestamp"] = ts
+			}
+		}
+		messages = append(messages, msg)
+	}
+
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-		"session_id": "",
-		"messages":   []interface{}{},
+		"session_id": sessionID,
+		"messages":   messages,
 	}))
 }
 
