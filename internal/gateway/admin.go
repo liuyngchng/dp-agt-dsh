@@ -584,7 +584,8 @@ func (h *AdminHandler) HandlePromptConfigTemplate(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="prompt-config-template.csv"`)
 	// BOM for Excel UTF-8 compatibility
-	_, _ = w.Write([]byte("﻿" + csv))
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	_, _ = w.Write([]byte(csv))
 }
 
 func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.Request) {
