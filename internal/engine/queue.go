@@ -253,6 +253,11 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	}
 
+	// 切换 session 的工作目录到当前任务的 workdir
+	if err := q.ds.SetWorkingDirectory(sessionID, workDir); err != nil {
+		slog.Warn("set working directory failed", "session", sessionID, "workdir", workDir, "err", err)
+	}
+
 	var allEvents []harness.SessionEvent
 
 	result, err := q.ds.Run(sessionID, rendered, func(n harness.Notification) {
@@ -263,7 +268,7 @@ func (q *Queue) processItem(item *QueueItem) {
 			if ev, ok := n.Payload["event"].(map[string]interface{}); ok {
 				allEvents = append(allEvents, harness.SessionEvent{
 					Type: getStr(ev, "type"),
-					Data: ev,
+					Data: getMap(ev, "data"), // 内层 data，不含外层外壳
 				})
 			}
 		}
@@ -312,6 +317,15 @@ func (q *Queue) ensureDSH() error {
 	return nil
 }
 
+// DSH 返回共享的 dsh 客户端（懒启动），供会话续聊复用，
+// 避免另起一个 harness.Client 去 resume 已被任务队列持有的 session。
+func (q *Queue) DSH() (*harness.Client, error) {
+	if err := q.ensureDSH(); err != nil {
+		return nil, err
+	}
+	return q.ds, nil
+}
+
 func (q *Queue) failTask(taskID, errMsg string) {
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 		"status":        string(store.StatusFailed),
@@ -346,6 +360,13 @@ func getStr(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func getMap(m map[string]interface{}, key string) map[string]interface{} {
+	if v, ok := m[key].(map[string]interface{}); ok {
+		return v
+	}
+	return nil
 }
 
 // ── SSE 事件总线 ──

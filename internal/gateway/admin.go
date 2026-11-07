@@ -285,6 +285,10 @@ func (h *AdminHandler) HandleSessionStream(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// ── 1. 连接时先发送 snapshot：从 DB 拉取已有历史消息 ──
+	sendSSEEvent(w, flusher, h.getSessionSnapshot(sessionID))
+
+	// ── 2. 然后订阅实时事件，滚动推送 ──
 	ch, cancel := engine.SubscribeStream(sessionID)
 	defer cancel()
 
@@ -297,14 +301,185 @@ func (h *AdminHandler) HandleSessionStream(w http.ResponseWriter, r *http.Reques
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(msg)
-			fmt.Fprintf(w, "data: %s\n\n", string(data))
-			flusher.Flush()
+			// 将原始通知转换为前端兼容格式
+			for _, m := range notificationToFrontend(msg) {
+				sendSSEEvent(w, flusher, m)
+			}
 			if msg.Method == "end" {
 				return
 			}
 		}
 	}
+}
+
+// getSessionSnapshot 从 sdk_trace 读取已有消息，组装 snapshot
+func (h *AdminHandler) getSessionSnapshot(sessionID string) map[string]interface{} {
+	rawEvents := h.loadSessionEvents(sessionID)
+	messages := convertEventsToFrontend(rawEvents)
+	return map[string]interface{}{
+		"type":     "snapshot",
+		"messages": messages,
+	}
+}
+
+// loadSessionEvents 从 DB 反序列化 session 对应的 sdk_trace
+func (h *AdminHandler) loadSessionEvents(sessionID string) []map[string]interface{} {
+	taskID := strings.TrimPrefix(sessionID, "s-")
+	task, _ := h.store.GetTaskLog(taskID)
+	if task == nil {
+		task, _ = h.store.GetTaskBySessionID(sessionID)
+	}
+	if task == nil || task.SdkTrace == "" {
+		return nil
+	}
+	var events []map[string]interface{}
+	if err := json.Unmarshal([]byte(task.SdkTrace), &events); err != nil {
+		return nil
+	}
+	return events
+}
+
+// notificationToFrontend 把原始 SDK 通知转换为前端 viewSession 兼容的消息列表
+func notificationToFrontend(n harness.Notification) []map[string]interface{} {
+	if n.Method == "end" {
+		return []map[string]interface{}{{"type": "end"}}
+	}
+	if n.Method != "session.event" {
+		return nil
+	}
+	ev, _ := n.Payload["event"].(map[string]interface{})
+	if ev == nil {
+		return nil
+	}
+	evType := getStr(ev, "type")
+
+	var role string
+	switch evType {
+	case "user/message":
+		role = "user"
+	case "assistant/message":
+		role = "assistant"
+	default:
+		return nil // 非对话事件不推给前端
+	}
+
+	// 内层 data 包含真正的消息内容
+	payload, _ := ev["data"].(map[string]interface{})
+	if payload == nil {
+		return nil
+	}
+
+	var message map[string]interface{}
+	if role == "assistant" {
+		if m, ok := payload["message"].(map[string]interface{}); ok {
+			message = m
+		} else {
+			message = payload
+		}
+	} else {
+		message = payload
+	}
+	message = convertMessageToFrontend(message)
+
+	msg := map[string]interface{}{"type": role, "message": message}
+	if ts := payload["time"]; ts != nil {
+		msg["timestamp"] = ts
+	}
+	return []map[string]interface{}{msg}
+}
+
+// convertMessageToFrontend 把 dsh 的 message 内容块转换为前端 formatSessionMessages 期望的格式。
+// dsh 使用 reasoning / tool-call 类型，前端期望 thinking / tool_use。
+func convertMessageToFrontend(message map[string]interface{}) map[string]interface{} {
+	if message == nil {
+		return message
+	}
+	content, ok := message["content"].([]interface{})
+	if !ok {
+		return message
+	}
+	converted := make([]interface{}, 0, len(content))
+	for _, raw := range content {
+		block, ok := raw.(map[string]interface{})
+		if !ok {
+			converted = append(converted, raw)
+			continue
+		}
+		bt := getStr(block, "type")
+		switch bt {
+		case "reasoning":
+			// dsh: {type:"reasoning", text:"..."} → 前端: {type:"thinking", thinking:"..."}
+			nb := map[string]interface{}{"type": "thinking"}
+			if v, ok := block["text"].(string); ok {
+				nb["thinking"] = v
+			}
+			converted = append(converted, nb)
+		case "tool-call":
+			// dsh: {type:"tool-call", name, arguments(string), id} → 前端: {type:"tool_use", name, input(obj), id}
+			nb := map[string]interface{}{"type": "tool_use"}
+			if v, ok := block["name"].(string); ok {
+				nb["name"] = v
+			}
+			if v, ok := block["id"].(string); ok {
+				nb["id"] = v
+			}
+			if args, ok := block["arguments"].(string); ok && args != "" {
+				var input interface{}
+				if err := json.Unmarshal([]byte(args), &input); err == nil {
+					nb["input"] = input
+				} else {
+					nb["input"] = args
+				}
+			}
+			converted = append(converted, nb)
+		default:
+			converted = append(converted, block)
+		}
+	}
+	out := make(map[string]interface{}, len(message))
+	for k, v := range message {
+		out[k] = v
+	}
+	out["content"] = converted
+	return out
+}
+
+// convertEventsToFrontend 把 sdk_trace 中的事件转为前端格式
+func convertEventsToFrontend(rawEvents []map[string]interface{}) []map[string]interface{} {
+	var out []map[string]interface{}
+	for _, ev := range rawEvents {
+		evType := getStr(ev, "type")
+		var role string
+		switch evType {
+		case "user/message":
+			role = "user"
+		case "assistant/message":
+			role = "assistant"
+		default:
+			continue
+		}
+		payload, _ := ev["data"].(map[string]interface{})
+		if payload == nil {
+			continue
+		}
+		var message map[string]interface{}
+		if role == "assistant" {
+			if m, ok := payload["message"].(map[string]interface{}); ok {
+				message = m
+			} else {
+				message = payload
+			}
+		} else {
+			message = payload
+		}
+		message = convertMessageToFrontend(message)
+		msg := map[string]interface{}{"type": role, "message": message}
+		if ts := payload["time"]; ts != nil {
+			msg["timestamp"] = ts
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 // ── 审计 (audit) ──
@@ -986,7 +1161,6 @@ func decodeUploadFilename(name string) string {
 }
 
 // HandleSessionMessages 一次性拉取会话历史
-// session_id 本身包含 task_id（格式 s-{task_id}），直接反查 task_logs 的 sdk_trace。
 func (h *AdminHandler) HandleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/admin/sessions/")
 	path = strings.TrimSuffix(path, "/messages")
@@ -997,86 +1171,8 @@ func (h *AdminHandler) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 从 session_id 反推 task_id（session 由 s-{task_id} 命名）
-	taskID := strings.TrimPrefix(sessionID, "s-")
-	task, _ := h.store.GetTaskLog(taskID)
-	if task == nil {
-		// 尝试按 session_id 字段查找
-		task, _ = h.store.GetTaskBySessionID(sessionID)
-	}
-	if task == nil {
-		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-			"session_id": sessionID,
-			"messages":   []interface{}{},
-		}))
-		return
-	}
-
-	// 从 sdk_trace 还原消息列表
-	trace := task.SdkTrace
-	if trace == "" {
-		// 任务尚未结束或无 trace，返回空
-		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-			"session_id": sessionID,
-			"messages":   []interface{}{},
-		}))
-		return
-	}
-
-	var rawEvents []map[string]interface{}
-	if err := json.Unmarshal([]byte(trace), &rawEvents); err != nil {
-		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
-			"session_id": sessionID,
-			"messages":   []interface{}{},
-		}))
-		return
-	}
-
-	// dsh SessionEvent → 前端 formatSessionMessages 期望的 {type, message, timestamp}
-	// SessionEvent.Data 是 dsh 事件外壳：{type,seq,time,data:{...},surfaceOp}
-	// 真正的消息内容在外壳的 data 字段里：
-	//   user/message      → data.data.content 直接是内容
-	//   assistant/message → data.data.message.content 才是内容
-	messages := make([]interface{}, 0, len(rawEvents))
-	for _, ev := range rawEvents {
-		evType := getStr(ev, "type")
-		var role string
-		switch evType {
-		case "user/message":
-			role = "user"
-		case "assistant/message":
-			role = "assistant"
-		default:
-			continue // 跳过非对话事件
-		}
-
-		// 外层 = dsh 事件外壳，内层 = 真正的消息数据
-		outer, _ := ev["data"].(map[string]interface{})
-		payload, _ := outer["data"].(map[string]interface{})
-
-		// 前端期望 msg.message 有 content 字段
-		var message map[string]interface{}
-		if role == "assistant" {
-			if m, ok := payload["message"].(map[string]interface{}); ok {
-				message = m
-			} else {
-				message = payload
-			}
-		} else {
-			message = payload
-		}
-
-		msg := map[string]interface{}{
-			"type":    role,
-			"message": message,
-		}
-		if outer != nil {
-			if ts := outer["time"]; ts != nil {
-				msg["timestamp"] = ts
-			}
-		}
-		messages = append(messages, msg)
-	}
+	rawEvents := h.loadSessionEvents(sessionID)
+	messages := convertEventsToFrontend(rawEvents)
 
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
 		"session_id": sessionID,
@@ -1202,26 +1298,30 @@ func (h *AdminHandler) HandleSessionChat(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// 确保 dsh 已运行
-	if h.queue != nil {
-		// 使用 queue 现有的 ensureDSH 能力
-	}
-	// 直接创建 harness client 做 query
-	ds := harness.NewClient(h.cfg.LLM)
-	if err := ds.Start(); err != nil {
+	// 复用任务队列共享的 dsh 客户端，避免新起 harness.Client 去 resume 已被持有的 session
+	ds, err := h.queue.DSH()
+	if err != nil {
 		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "启动运行时失败: " + err.Error()})
 		return
 	}
-	defer ds.Close()
 
-	// resume session
+	// resume session（同一客户端内，session 若已打开会报 already owned，忽略即可继续对话）
 	if err := ds.ResumeSession(sessionID); err != nil {
-		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "恢复会话失败: " + err.Error()})
-		return
+		// 已打开则说明上下文已就绪，直接继续
+		if !strings.Contains(err.Error(), "already owned") {
+			sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "恢复会话失败: " + err.Error()})
+			return
+		}
+	}
+
+	// 切到该 session 对应 linkid 的工作目录（与任务处理时一致）
+	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(session.LinkID))
+	if err := ds.SetWorkingDirectory(sessionID, workDir); err != nil {
+		slog.Warn("chat set working directory failed", "session", sessionID, "workdir", workDir, "err", err)
 	}
 
 	// run query with stream
-	_, err := ds.Run(sessionID, body.Message, func(n harness.Notification) {
+	_, err = ds.Run(sessionID, body.Message, func(n harness.Notification) {
 		data, _ := json.Marshal(n)
 		fmt.Fprintf(w, "data: %s\n\n", string(data))
 		flusher.Flush()

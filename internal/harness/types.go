@@ -35,13 +35,13 @@ type Notification struct {
 // ── initialize ──
 
 type InitializeParams struct {
-	Cwd             string                 `json:"cwd"`
-	Provider        string                 `json:"provider"`
-	Model           string                 `json:"model"`
-	ReasoningEffort string                 `json:"reasoningEffort,omitempty"`
-	MaxTokens       int                    `json:"maxTokens,omitempty"`
-	Capabilities    map[string]interface{} `json:"capabilities,omitempty"`
-	ApprovalRequests bool                 `json:"approvalRequests,omitempty"`
+	Cwd              string                 `json:"cwd"`
+	Provider         string                 `json:"provider"`
+	Model            string                 `json:"model"`
+	ReasoningEffort  string                 `json:"reasoningEffort,omitempty"`
+	MaxTokens        int                    `json:"maxTokens,omitempty"`
+	Capabilities     map[string]interface{} `json:"capabilities,omitempty"`
+	ApprovalRequests bool                   `json:"approvalRequests,omitempty"`
 }
 
 type InitializeResult struct {
@@ -77,6 +77,17 @@ type SessionPromptResult struct {
 
 type SessionResumeParams struct {
 	SessionID string `json:"sessionId"`
+}
+
+// ── session/working-directory/set ──
+
+type SessionWorkingDirectorySetParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+}
+
+type SessionWorkingDirectoryResult struct {
+	Cwd string `json:"cwd"`
 }
 
 // ── shutdown ──

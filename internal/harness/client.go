@@ -240,7 +240,10 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 			sid, _ := note.Payload["sessionId"].(string)
 			if sid == sessionID {
 				if event, ok := note.Payload["event"].(map[string]interface{}); ok {
-					se := SessionEvent{Type: getStr(event, "type"), Data: event}
+					// SessionEvent.Data 存的是事件真正的数据（event["data"]），
+					// 而不是整个 event 外壳，否则会双重嵌套导致 FinalResponse 读不到 content。
+					eventData, _ := event["data"].(map[string]interface{})
+					se := SessionEvent{Type: getStr(event, "type"), Data: eventData}
 					events = append(events, se)
 
 					if !receivedPrompt && se.Type == "agent/inbox/spliced" {
@@ -276,6 +279,15 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 // ResumeSession 恢复持久化的 session
 func (c *Client) ResumeSession(sessionID string) error {
 	_, err := c.request("session/resume", SessionResumeParams{SessionID: sessionID})
+	return err
+}
+
+// SetWorkingDirectory 设置 session 的工作目录
+func (c *Client) SetWorkingDirectory(sessionID, workDir string) error {
+	_, err := c.request("session/working-directory/set", SessionWorkingDirectorySetParams{
+		SessionID: sessionID,
+		Path:      workDir,
+	})
 	return err
 }
 
