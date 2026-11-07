@@ -363,6 +363,33 @@ header p {
     font-size: 0.9rem;
 }
 
+/* 横向子 tab */
+.sub-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 20px 0 24px;
+    border-bottom: 2px solid #eef1f6;
+}
+.sub-tab {
+    background: transparent;
+    border: none;
+    padding: 10px 20px;
+    font-size: 0.9rem;
+    color: #777;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.sub-tab:hover { color: #4b6cb7; }
+.sub-tab.active { color: #4b6cb7; border-bottom-color: #4b6cb7; }
+.sub-panel { display: none; }
+.sub-panel.active { display: block; }
+
 /* ---- 按钮 ---- */
 .cfg-btn {
     padding: 11px 28px;

@@ -184,6 +184,8 @@ func (q *Queue) processItem(item *QueueItem) {
 	var resumeID string
 	if existingSession != nil {
 		resumeID = existingSession.SessionID
+		// 有新任务命中该 session 时刷新「更新时间」，避免被定期清理误删
+		q.store.TouchSession(resumeID)
 	}
 
 	// 创建/复用 workdir
@@ -198,9 +200,16 @@ func (q *Queue) processItem(item *QueueItem) {
 	isMock, _ := item.Body["callback_url"].(string)
 	isMockFlag, _ := item.Body["is_mock"].(bool)
 	if isMock == "mock" || isMockFlag {
+		// mock 模式也记录一个 session，保证前端「会话记录」「会话管理」可见。
+		mockSessionID := resumeID
+		if mockSessionID == "" {
+			mockSessionID = "s-" + taskID
+		}
+		_ = q.store.UpsertSession(mockSessionID, linkID)
 		log.Printf("[queue] mock: task=%s path=%s prompt_rendered=%d bytes", taskID, item.Path, len(rendered))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":      string(store.StatusCompleted),
+			"session_id":  mockSessionID,
 			"sdk_output":  `{"note": "mock mode - dsh not invoked"}`,
 			"sdk_trace":   "[]",
 			"finished_at": store.TimeNowFmt(),
@@ -227,6 +236,10 @@ func (q *Queue) processItem(item *QueueItem) {
 			sessionID = "s-" + taskID
 		}
 	}
+
+	// 立即写入 session 和 task_logs 的 session_id，保证处理中前端即可见（对齐 dp-agt 的 onSessionId 回调）。
+	_ = q.store.UpsertSession(sessionID, linkID)
+	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 
 	var allEvents []harness.SessionEvent
 

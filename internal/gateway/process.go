@@ -109,6 +109,8 @@ func (h *TasksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.HandleLog(w, r)
 	case method == "GET" && strings.HasPrefix(path, "/api/task/link/log/"):
 		h.HandleLinkLog(w, r)
+	case method == "GET" && strings.HasPrefix(path, "/api/task/link/") && strings.HasSuffix(path, "/history"):
+		h.HandleLinkHistory(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -272,6 +274,64 @@ func (h *TasksHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
 		"finished_at":   task.FinishedAt,
+	}))
+}
+
+// HandleLinkHistory 会话处理时间线（按 linkid 聚合所有 task）
+func (h *TasksHandler) HandleLinkHistory(w http.ResponseWriter, r *http.Request) {
+	// path = /api/task/link/:linkid/history
+	linkID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/task/link/"), "/history")
+	linkID = strings.Trim(linkID, "/")
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "json"
+	}
+
+	tasks, err := h.store.ListTasksByLinkid(linkID, 0)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, resp(5000, err.Error(), "", linkID, nil))
+		return
+	}
+	if len(tasks) == 0 {
+		if format == "html" {
+			writeHTML404(w, "该 linkid 下无任务记录")
+			return
+		}
+		if format == "md" {
+			writeText(w, http.StatusNotFound, "text/markdown; charset=utf-8", "# 该 linkid 下无任务记录\n")
+			return
+		}
+		writeJSON(w, http.StatusNotFound, resp(1001, "该 linkid 下无任务记录", "", linkID, nil))
+		return
+	}
+
+	views := make([]historyTaskView, 0, len(tasks))
+	for _, t := range tasks {
+		views = append(views, historyTaskView{
+			TaskID:       t.TaskID,
+			SessionID:    t.SessionID,
+			Path:         t.Path,
+			Status:       string(t.Status),
+			ErrorMessage: t.ErrorMessage,
+			CreatedAt:    t.CreatedAt,
+			FinishedAt:   t.FinishedAt,
+			Events:       buildOutputOnlyEvents(&t),
+		})
+	}
+
+	if format == "html" {
+		writeText(w, http.StatusOK, "text/html; charset=utf-8", renderHistoryHTML(linkID, views))
+		return
+	}
+	if format == "md" {
+		writeText(w, http.StatusOK, "text/markdown; charset=utf-8", renderHistoryMd(linkID, views))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp(0, "success", "", linkID, map[string]interface{}{
+		"linkid": linkID,
+		"total":  len(views),
+		"tasks":  views,
 	}))
 }
 

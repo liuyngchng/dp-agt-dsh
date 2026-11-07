@@ -8,7 +8,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 IMAGE="${IMAGE:-dp-agt-dsh:0.1.0}"
 CONTAINER="${CONTAINER:-dp-agt-dsh}"
-HOST_PORT="${HOST_PORT:-20001}"
+HOST_PORT="${HOST_PORT:-20003}"
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
 NETWORK="${NETWORK:-llm_net}"
 
@@ -67,7 +67,7 @@ case "${1:-start}" in
       --name "$CONTAINER" \
       --user "$HOST_UID:$HOST_GID" \
       --network "$NETWORK" \
-      -p "$HOST_PORT:20001" \
+      -p "$HOST_PORT:20002" \
       -v "$DATA_DIR:/app/data" \
       --restart unless-stopped \
       "$IMAGE"
@@ -124,7 +124,7 @@ case "${1:-start}" in
   status)
     if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
       echo "Container: $CONTAINER"
-      docker inspect "$CONTAINER" --format 'Status: {{.State.Status}} | Port: {{(index .NetworkSettings.Ports "20001/tcp" 0).HostPort}} | Started: {{.State.StartedAt}}'
+      docker inspect "$CONTAINER" --format 'Status: {{.State.Status}} | Port: {{(index .NetworkSettings.Ports "20002/tcp" 0).HostPort}} | Started: {{.State.StartedAt}}'
     else
       echo "Container not running"
     fi

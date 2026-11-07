@@ -3,8 +3,11 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -31,28 +34,58 @@ func NewAuth(cfg *config.Config, s *store.Store) *Auth {
 	return &Auth{cfg: cfg, store: s, tokens: make(map[string]*LoginSession)}
 }
 
+// hashApiToken 对外 API 认证 token 的 SHA-256 十六进制哈希（DB 只存哈希，不存明文）
+func hashApiToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // APITokenMiddleware 外部系统调用认证
 // 仅当 config 表 api_auth_enabled == "1" 且配置了 api_auth_token 时启用校验；
 // 否则放行（与 dp-agt 的 fail-open 语义一致，未配置认证时不阻塞业务）。
+// token 在 DB 中仅存 SHA-256 哈希，比较使用 subtle.ConstantTimeCompare 防时序侧信道。
 func (a *Auth) APITokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dbEnabled := a.store.GetConfig("api_auth_enabled") == "1"
-		dbToken := a.store.GetConfig("api_auth_token")
+		dbTokenHash := a.store.GetConfig("api_auth_token")
 
-		if dbEnabled && dbToken != "" {
-			token := ""
-			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-				token = strings.TrimPrefix(h, "Bearer ")
-			} else if h := r.Header.Get("X-Api-Key"); h != "" {
-				token = h
+		respondUnauthorized := func(reason string) {
+			resp := resp(1003, "Unauthorized: 无效或缺失的 X-Api-Key / Authorization Bearer Token", "", "", nil)
+			// 记录校验失败日志：含来源 IP、路径、原因，但不记录 token 明文/哈希
+			log.Printf("[auth] api_auth_failed path=%s ip=%s reason=%s has_token=%v", r.URL.Path, r.RemoteAddr, reason, extractAPIToken(r) != "")
+			writeJSON(w, http.StatusUnauthorized, resp)
+		}
+
+		if dbEnabled && dbTokenHash != "" {
+			token := extractAPIToken(r)
+			if token == "" {
+				respondUnauthorized("missing_token")
+				return
 			}
-			if token != dbToken {
-				writeJSON(w, http.StatusUnauthorized, resp(1003, "Unauthorized: 无效或缺失的 X-Api-Key / Authorization Bearer Token", "", "", nil))
+			providedHash := hashApiToken(token)
+			// 哈希长度固定为 64 字符，比较安全
+			ok := false
+			if len(providedHash) == len(dbTokenHash) {
+				ok = subtle.ConstantTimeCompare([]byte(providedHash), []byte(dbTokenHash)) == 1
+			}
+			if !ok {
+				respondUnauthorized("token_mismatch")
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// extractAPIToken 从 X-Api-Key 或 Authorization: Bearer 中提取 token
+func extractAPIToken(r *http.Request) string {
+	if h := r.Header.Get("X-Api-Key"); h != "" {
+		return h
+	}
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	return ""
 }
 
 // WebMiddleware 管理后台登录态校验
@@ -141,6 +174,12 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeText(w http.ResponseWriter, status int, contentType, body string) {
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
 }
 
 func readJSON(r *http.Request, v interface{}) error {

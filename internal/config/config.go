@@ -15,11 +15,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port    int    `yaml:"port"`
-	Debug   bool   `yaml:"debug"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	SelfIP  string `yaml:"self_ip"`
+	Port     int    `yaml:"port"`
+	SelfPort int    `yaml:"self_port"`
+	Debug    bool   `yaml:"debug"`
+	SelfIP   string `yaml:"self_ip"`
 }
 
 type SysConfig struct {
@@ -33,18 +32,11 @@ type LLMConfig struct {
 	BaseURL                   string `yaml:"base_url"`
 	AuthToken                 string `yaml:"auth_token"`
 	Model                     string `yaml:"model"`
-	OpusModel                 string `yaml:"opus_model"`
-	SonnetModel               string `yaml:"sonnet_model"`
-	HaikuModel                 string `yaml:"haiku_model"`
-	SubagentModel             string `yaml:"subagent_model"`
-	EffortLevel               string `yaml:"effort_level"`
 	TimeoutMs                 int    `yaml:"timeout_ms"`
 	DisableNonessentialTraffic bool   `yaml:"disable_nonessential_traffic"`
-	AttributionHeader         bool   `yaml:"attribution_header"`
-	AutoModeServer            bool   `yaml:"auto_mode_server"`
 
-	// dsh 特有
-	Provider string `yaml:"-"` // deepseek-official | anthropic | ...
+	// dsh 内部字段（不从 yaml 读取）
+	Provider string `yaml:"-"` // deepseek-official
 	DSHome   string `yaml:"-"` // dsh 运行时 home 目录
 }
 
@@ -80,10 +72,9 @@ func Load(dataDir string) (*Config, error) {
 	cfg := &Config{}
 
 	// server
-	cfg.Server.Port = intMap(raw, "server.port", 20001)
+	cfg.Server.Port = intMap(raw, "server.port", 20002)
+	cfg.Server.SelfPort = intMap(raw, "server.self_port", 20003)
 	cfg.Server.Debug = boolMap(raw, "server.debug", false)
-	cfg.Server.CertFile = strMap(raw, "server.cert_file", "")
-	cfg.Server.KeyFile = strMap(raw, "server.key_file", "")
 	cfg.Server.SelfIP = strMap(raw, "server.self_ip", "")
 
 	// sys
@@ -116,24 +107,17 @@ func Load(dataDir string) (*Config, error) {
 	cfg.LLM.BaseURL = strMap(raw, "llm.base_url", "")
 	cfg.LLM.AuthToken = strMap(raw, "llm.auth_token", "")
 	cfg.LLM.Model = strMap(raw, "llm.model", "deepseek-v4-pro")
-	cfg.LLM.OpusModel = strMap(raw, "llm.opus_model", "")
-	cfg.LLM.SonnetModel = strMap(raw, "llm.sonnet_model", "")
-	cfg.LLM.HaikuModel = strMap(raw, "llm.haiku_model", "")
-	cfg.LLM.SubagentModel = strMap(raw, "llm.subagent_model", "")
-	cfg.LLM.EffortLevel = strMap(raw, "llm.effort_level", "")
 	cfg.LLM.TimeoutMs = intMap(raw, "llm.timeout_ms", 600000)
 	cfg.LLM.DisableNonessentialTraffic = boolMap(raw, "llm.disable_nonessential_traffic", true)
-	cfg.LLM.AttributionHeader = boolMap(raw, "llm.attribution_header", false)
-	cfg.LLM.AutoModeServer = boolMap(raw, "llm.auto_mode_server", false)
 
-	// 环境变量覆盖
-	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
+	// 环境变量覆盖（dsh 原生使用 DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY）
+	if v := os.Getenv("DEEPSEEK_BASE_URL"); v != "" {
 		cfg.LLM.BaseURL = v
 	}
-	if v := os.Getenv("ANTHROPIC_AUTH_TOKEN"); v != "" {
+	if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
 		cfg.LLM.AuthToken = v
 	}
-	if v := os.Getenv("ANTHROPIC_MODEL"); v != "" {
+	if v := os.Getenv("DEEPSEEK_MODEL"); v != "" {
 		cfg.LLM.Model = v
 	}
 
@@ -157,8 +141,9 @@ func Load(dataDir string) (*Config, error) {
 func (c *Config) RawConfig() map[string]interface{} {
 	return map[string]interface{}{
 		"server": map[string]interface{}{
-			"port":    c.Server.Port,
-			"self_ip": c.Server.SelfIP,
+			"port":      c.Server.Port,
+			"self_port": c.Server.SelfPort,
+			"self_ip":   c.Server.SelfIP,
 		},
 		"sys": map[string]interface{}{
 			"max_concurrent_tasks": c.Sys.MaxConcurrentTasks,

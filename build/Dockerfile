@@ -60,7 +60,7 @@ RUN mkdir -p /app/data/tasks /app/data/logs /app/data/dsh-home
 COPY data/cfg.yml.template /app/data/cfg.yml.template
 COPY data/cfg.csv.template /app/data/cfg.csv.template
 
-EXPOSE 20001
+EXPOSE 20002
 
 ENV DATA_DIR=/app/data
 

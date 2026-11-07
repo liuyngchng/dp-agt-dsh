@@ -274,6 +274,14 @@ func (s *Store) GetLatestTaskByLinkid(linkID string) (*TaskLog, error) {
 	return s.getTaskByWhere("linkid = ? ORDER BY created_at DESC LIMIT 1", linkID)
 }
 
+// ListTasksByLinkid 按 linkid 列出所有任务，按 finished_ts 升序（历史时间线用）
+func (s *Store) ListTasksByLinkid(linkID string, limit int) ([]TaskLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.queryTasks("WHERE linkid = ? ORDER BY finished_ts DESC LIMIT ?", linkID, limit)
+}
+
 func (s *Store) getTaskByWhere(where string, args ...interface{}) (*TaskLog, error) {
 	row := s.db.QueryRow(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
@@ -419,10 +427,16 @@ func (s *Store) GetSessionByLinkid(linkID string) (*Session, error) {
 func (s *Store) UpsertSession(sessionID, linkID string) error {
 	now := time.Now().UnixMilli()
 	ts := timeFmt(now)
+	// 以 linkid 为唯一键：同一 linkid 复用会话时，无论旧行是 active 还是 closed，
+	// 都覆盖为当前新的 session_id，避免 UNIQUE(linkid) 冲突。
 	_, err := s.db.Exec(
 		`INSERT INTO sessions (session_id, linkid, status, created_at, updated_at, created_ts, updated_ts)
 		 VALUES (?, ?, 'active', ?, ?, ?, ?)
-		 ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at, updated_ts=excluded.updated_ts`,
+		 ON CONFLICT(linkid) DO UPDATE SET
+		   session_id = excluded.session_id,
+		   status = 'active',
+		   updated_at = excluded.updated_at,
+		   updated_ts = excluded.updated_ts`,
 		sessionID, linkID, ts, ts, now, now,
 	)
 	return err
@@ -457,6 +471,51 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 		return nil, nil
 	}
 	return &sess, err
+}
+
+// TouchSession 有新任务命中该 session 时刷新「更新时间」（保持 status 为 active）
+func (s *Store) TouchSession(sessionID string) bool {
+	now := time.Now().UnixMilli()
+	ts := timeFmt(now)
+	result, err := s.db.Exec(
+		"UPDATE sessions SET status = 'active', updated_at = ?, updated_ts = ? WHERE session_id = ?",
+		ts, now, sessionID,
+	)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
+}
+
+// CloseSession 将会话标记为 closed
+func (s *Store) CloseSession(sessionID string) bool {
+	now := time.Now().UnixMilli()
+	ts := timeFmt(now)
+	result, err := s.db.Exec(
+		"UPDATE sessions SET status = 'closed', updated_at = ?, updated_ts = ? WHERE session_id = ?",
+		ts, now, sessionID,
+	)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
+}
+
+// CancelByLinkid 取消某 linkid 下所有未完成任务
+func (s *Store) CancelByLinkid(linkID string) int {
+	now := time.Now().UnixMilli()
+	ts := timeFmt(now)
+	result, err := s.db.Exec(
+		"UPDATE task_logs SET status = 'cancelled', finished_at = ?, finished_ts = ? WHERE linkid = ? AND status IN ('pending', 'processing')",
+		ts, now, linkID,
+	)
+	if err != nil {
+		return 0
+	}
+	n, _ := result.RowsAffected()
+	return int(n)
 }
 
 func (s *Store) RemoveSession(sessionID string) bool {
@@ -654,6 +713,12 @@ func (s *Store) GetConfig(key string) string {
 
 func (s *Store) SetConfig(key, value, note string) error {
 	_, err := s.db.Exec("INSERT INTO config (key, value, note) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, note=excluded.note", key, value, note)
+	return err
+}
+
+// DelConfig 删除配置项
+func (s *Store) DelConfig(key string) error {
+	_, err := s.db.Exec("DELETE FROM config WHERE key = ?", key)
 	return err
 }
 

@@ -88,18 +88,13 @@ func (h *AdminHandler) HandleNav(w http.ResponseWriter, r *http.Request) {
 // ── 服务器信息 ──
 
 func (h *AdminHandler) HandleServerInfo(w http.ResponseWriter, r *http.Request) {
-	protocol := "http"
-	if h.cfg.Server.CertFile != "" && h.cfg.Server.KeyFile != "" {
-		protocol = "https"
-	}
 	host := h.cfg.Server.SelfIP
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "data": map[string]interface{}{
-		"protocol": protocol,
-		"host":     host,
-		"port":     h.cfg.Server.Port,
+		"host": host,
+		"port": h.cfg.Server.SelfPort,
 	}})
 }
 
@@ -198,28 +193,38 @@ func (h *AdminHandler) HandleAdminTasks(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type taskView struct {
-		TaskID     string `json:"task_id"`
-		LinkID     string `json:"linkid"`
-		SessionID  string `json:"session_id"`
-		Title      string `json:"title"`
-		Path       string `json:"path"`
-		Status     string `json:"status"`
-		ErrorMsg   string `json:"error_message"`
-		CreatedAt  string `json:"created_at"`
-		FinishedAt string `json:"finished_at"`
+		TaskID        string `json:"task_id"`
+		LinkID        string `json:"linkid"`
+		SessionID     string `json:"session_id"`
+		SessionStatus string `json:"session_status"`
+		Title         string `json:"title"`
+		Path          string `json:"path"`
+		Status        string `json:"status"`
+		ErrorMsg      string `json:"error_message"`
+		CreatedAt     string `json:"created_at"`
+		FinishedAt    string `json:"finished_at"`
 	}
 	views := make([]taskView, 0, len(tasks))
 	for _, t := range tasks {
+		sessionStatus := ""
+		if t.SessionID != "" {
+			if sess, _ := h.store.GetSession(t.SessionID); sess != nil {
+				sessionStatus = sess.Status
+			} else {
+				sessionStatus = "closed"
+			}
+		}
 		views = append(views, taskView{
-			TaskID:     t.TaskID,
-			LinkID:     t.LinkID,
-			SessionID:  t.SessionID,
-			Title:      extractTitle(t.RequestBody),
-			Path:       t.Path,
-			Status:     string(t.Status),
-			ErrorMsg:   t.ErrorMessage,
-			CreatedAt:  t.CreatedAt,
-			FinishedAt: t.FinishedAt,
+			TaskID:        t.TaskID,
+			LinkID:        t.LinkID,
+			SessionID:     t.SessionID,
+			SessionStatus: sessionStatus,
+			Title:         extractTitle(t.RequestBody),
+			Path:          t.Path,
+			Status:        string(t.Status),
+			ErrorMsg:      t.ErrorMessage,
+			CreatedAt:     t.CreatedAt,
+			FinishedAt:    t.FinishedAt,
 		})
 	}
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
@@ -377,6 +382,65 @@ func (h *AdminHandler) HandleAuditDetail(w http.ResponseWriter, r *http.Request)
 	}))
 }
 
+// HandleLinkTimeline 会话处理时间线（按 linkid 聚合所有 task），管理后台内部接口
+func (h *AdminHandler) HandleLinkTimeline(w http.ResponseWriter, r *http.Request) {
+	// path = /admin/audit/link/:linkid/timeline
+	linkID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/audit/link/"), "/timeline")
+	linkID = strings.Trim(linkID, "/")
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "json"
+	}
+
+	tasks, err := h.store.ListTasksByLinkid(linkID, 0)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, resp(5000, err.Error(), "", linkID, nil))
+		return
+	}
+	if len(tasks) == 0 {
+		if format == "html" {
+			writeHTML404(w, "该 linkid 下无任务记录")
+			return
+		}
+		if format == "md" {
+			writeText(w, http.StatusNotFound, "text/markdown; charset=utf-8", "# 该 linkid 下无任务记录\n")
+			return
+		}
+		writeJSON(w, http.StatusNotFound, resp(1001, "该 linkid 下无任务记录", "", linkID, nil))
+		return
+	}
+
+	views := make([]historyTaskView, 0, len(tasks))
+	for _, t := range tasks {
+		views = append(views, historyTaskView{
+			TaskID:       t.TaskID,
+			SessionID:    t.SessionID,
+			Title:        extractTitle(t.RequestBody),
+			Path:         t.Path,
+			Status:       string(t.Status),
+			ErrorMessage: t.ErrorMessage,
+			CreatedAt:    t.CreatedAt,
+			FinishedAt:   t.FinishedAt,
+			Events:       buildOutputOnlyEvents(&t),
+		})
+	}
+
+	if format == "html" {
+		writeText(w, http.StatusOK, "text/html; charset=utf-8", renderHistoryHTML(linkID, views))
+		return
+	}
+	if format == "md" {
+		writeText(w, http.StatusOK, "text/markdown; charset=utf-8", renderHistoryMd(linkID, views))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp(0, "success", "", linkID, map[string]interface{}{
+		"linkid": linkID,
+		"total":  len(views),
+		"tasks":  views,
+	}))
+}
+
 // ── 系统设置 ──
 
 func (h *AdminHandler) HandleSysConfig(w http.ResponseWriter, r *http.Request) {
@@ -384,13 +448,15 @@ func (h *AdminHandler) HandleSysConfig(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "AI 数字员工"
 	}
-	token := h.store.GetConfig("api_auth_token")
+	// token 已哈希存储，不再回传哈希值，仅告知是否已配置
+	hasToken := h.store.GetConfig("api_auth_token") != ""
 	authEnabled := h.store.GetConfig("api_auth_enabled") == "1"
 	writeJSON(w, 200, map[string]interface{}{"code": 0, "data": map[string]interface{}{
 		"sys": map[string]interface{}{"name": name},
 		"api": map[string]interface{}{
 			"auth_enabled": authEnabled,
-			"auth_token":   token,
+			"auth_token":   "", // 不回传 token/哈希
+			"has_token":    hasToken,
 		},
 	}})
 }
@@ -412,11 +478,10 @@ func (h *AdminHandler) HandleSysConfigSave(w http.ResponseWriter, r *http.Reques
 	if body.Sys.Name != "" {
 		_ = h.store.SetConfig("sys.name", strings.TrimSpace(body.Sys.Name), "系统名称")
 	}
-	if body.API.AuthToken != "" {
-		// Don't save the masked placeholder from the frontend
-		if !strings.HasPrefix(body.API.AuthToken, "****") && !strings.HasPrefix(body.API.AuthToken, "**") {
-			_ = h.store.SetConfig("api_auth_token", body.API.AuthToken, "对外 API 认证 Token")
-		}
+	if strings.TrimSpace(body.API.AuthToken) != "" {
+		// 仅存 SHA-256 哈希，不落明文
+		hash := hashApiToken(strings.TrimSpace(body.API.AuthToken))
+		_ = h.store.SetConfig("api_auth_token", hash, "对外 API 认证 Token（SHA-256 哈希）")
 	}
 	// 保存 api_auth_enabled 开关状态
 	_ = h.store.SetConfig("api_auth_enabled", boolToStr(body.API.AuthEnabled), "对外 API 认证开关")
@@ -502,8 +567,24 @@ func (h *AdminHandler) HandlePromptConfig(w http.ResponseWriter, r *http.Request
 }
 
 func (h *AdminHandler) HandlePromptConfigTemplate(w http.ResponseWriter, r *http.Request) {
+	csv := ""
+	templatePaths := []string{
+		filepath.Join(h.cfg.Sys.DataDir, "cfg.csv.template"),
+		"cfg.csv.template",
+	}
+	for _, p := range templatePaths {
+		if data, err := os.ReadFile(p); err == nil {
+			csv = string(data)
+			break
+		}
+	}
+	if csv == "" {
+		csv = "key,value,说明\n"
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Write([]byte("key,value,说明\n"))
+	w.Header().Set("Content-Disposition", `attachment; filename="prompt-config-template.csv"`)
+	// BOM for Excel UTF-8 compatibility
+	_, _ = w.Write([]byte("﻿" + csv))
 }
 
 func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.Request) {
@@ -526,22 +607,46 @@ func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.R
 	}
 
 	var rows []store.ConfigRow
-	for i, rec := range records {
-		if i == 0 {
-			continue // 跳过 header
+	var keys []string
+	lineNo := 1 // csv.NewReader 已跳过了第一行（header），但我们循环访问
+	for _, rec := range records {
+		lineNo++
+		// 跳过空行和注释行
+		if len(rec) == 0 {
+			continue
 		}
+		// 此行不是标准格式，可能只有一列
 		if len(rec) < 2 {
 			continue
 		}
 		key := strings.TrimSpace(rec[0])
 		val := strings.TrimSpace(rec[1])
-		isSecret := strings.HasSuffix(key, "_token") || strings.HasSuffix(key, "_secret") ||
-			strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "_password")
+		// 跳过 CSV 表头重复行
+		if key == "key" && val == "value" {
+			continue
+		}
+		if key == "" || val == "" {
+			continue
+		}
+		// 敏感检测：key 以 .token/.key/.secret/.password 或 _token/_key/_secret/_password 结尾
+		isSecret := false
+		for _, suffix := range []string{"token", "secret", "password", "key"} {
+			if strings.HasSuffix(key, "_"+suffix) || strings.HasSuffix(key, "."+suffix) {
+				isSecret = true
+				break
+			}
+		}
 		note := ""
 		if len(rec) >= 3 {
 			note = strings.TrimSpace(rec[2])
 		}
 		rows = append(rows, store.ConfigRow{Key: key, Value: val, IsSecret: isSecret, Note: note})
+		keys = append(keys, key)
+	}
+
+	if len(rows) == 0 {
+		writeJSON(w, 400, resp(1001, "CSV 文件中没有有效数据行", "", "", nil))
+		return
 	}
 
 	_ = h.store.ClearConfigRows()
@@ -550,7 +655,7 @@ func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 	log.Printf("[admin] imported %d config rows", len(rows))
-	writeJSON(w, 200, resp(0, "导入成功", "", "", nil))
+	writeJSON(w, 200, resp(0, "导入成功", "", "", map[string]interface{}{"imported": len(rows), "keys": keys}))
 }
 
 // ── Prompt Tar ──
@@ -583,15 +688,38 @@ func (h *AdminHandler) HandlePromptTarDownload(w http.ResponseWriter, r *http.Re
 }
 
 func (h *AdminHandler) HandlePromptPreview(w http.ResponseWriter, r *http.Request) {
-	_, files := engine.ScanPromptsDir(h.cfg.Sys.DataDir)
 	type fv struct {
 		File string `json:"file"`
 		Raw  string `json:"raw"`
 	}
 	var out []fv
-	for _, pf := range files {
-		out = append(out, fv{File: pf.Filename, Raw: pf.Content})
+
+	// 直接遍历 prompts/ 目录，返回所有 .md 文件（包括 claude-md.md、sections/*.md）
+	// 与 ScanPromptsDir 不同：预览要展示所有模板文件，而非仅暴露为访问路径的文件。
+	candidates := []string{"prompts", filepath.Join(h.cfg.Sys.DataDir, "..", "prompts")}
+	for _, dir := range candidates {
+		abs, _ := filepath.Abs(dir)
+		if st, err := os.Stat(abs); err != nil || !st.IsDir() {
+			continue
+		}
+		_ = filepath.Walk(abs, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(info.Name(), ".md") {
+				return nil
+			}
+			rel, _ := filepath.Rel(abs, path)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			out = append(out, fv{File: rel, Raw: string(data)})
+			return nil
+		})
+		break
 	}
+
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"previews": out}))
 }
 
@@ -640,8 +768,8 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 校验占位符
-	var errors []string
+	// 校验占位符（仅提示，不阻断上传）
+	var warnings []string
 	rePH := regexp.MustCompile(`\{\{([^}]+)\}\}`)
 	for name, content := range files {
 		for _, m := range rePH.FindAllStringSubmatch(content, -1) {
@@ -650,13 +778,9 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			if !validKeys[inner] {
-				errors = append(errors, name+": 占位符 {{"+inner+"}} 未在 CSV 中配置")
+				warnings = append(warnings, name+": 占位符 {{"+inner+"}} 未在 CSV 中配置")
 			}
 		}
-	}
-	if len(errors) > 0 {
-		writeJSON(w, 400, map[string]interface{}{"code": 1001, "message": "占位符校验失败", "data": map[string]interface{}{"errors": errors}})
-		return
 	}
 
 	// 替换 prompts/ 目录
@@ -682,7 +806,8 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 	for k := range files {
 		fileList = append(fileList, k)
 	}
-	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": fileList, "total": len(fileList)}))
+	log.Printf("[admin] prompt archive uploaded: %d files, %d warnings", len(fileList), len(warnings))
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": fileList, "total": len(fileList), "warnings": warnings}))
 }
 
 // ── 记忆管理 ──
@@ -714,23 +839,131 @@ func (h *AdminHandler) HandleMemoryUpload(w http.ResponseWriter, r *http.Request
 	}
 	defer file.Close()
 
+	// 记忆库规模限制：单文件 ≤ 100KB，文件数 ≤ 20，总量 ≤ 2MB。
+	// 索引表会注入每个任务的提示词，文件过多会拖长上下文；单文件过大读取时会吃掉大量 token。
+	const (
+		maxSingleBytes = 100 * 1024
+		maxFiles       = 20
+		maxTotalBytes  = 2 * 1024 * 1024
+	)
+
+	engine.EnsureMemoryDir(h.cfg.Sys.DataDir)
+	existing := engine.ListMemories(h.cfg.Sys.DataDir)
+	existingTotal := int64(0)
+	for _, m := range existing {
+		existingTotal += m.Size
+	}
+
 	// 还原中文文件名（multipart 按 latin1 解码）
 	filename := decodeUploadFilename(hdr.Filename)
-	if !strings.HasSuffix(strings.ToLower(filename), ".md") {
-		writeJSON(w, 400, resp(1001, "仅支持 .md 文件", "", "", nil))
-		return
-	}
+
 	data, err := io.ReadAll(file)
 	if err != nil {
 		writeJSON(w, 400, resp(1001, "读取文件失败", "", "", nil))
 		return
 	}
-	safe, err := engine.SaveMemory(h.cfg.Sys.DataDir, filename, string(data))
-	if err != nil {
-		writeJSON(w, 400, resp(1001, "保存失败: "+err.Error(), "", "", nil))
+
+	// 收集待写入的 .md 文件内容
+	type pendingFile struct {
+		name    string
+		content string
+	}
+	var pending []pendingFile
+
+	lower := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lower, ".md"):
+		pending = append(pending, pendingFile{name: filename, content: string(data)})
+	case strings.HasSuffix(lower, ".xmind"):
+		// 将 .xmind 脑图转为 Markdown，存为同名 .md
+		md, err := engine.XmindToMarkdown(data)
+		if err != nil {
+			writeJSON(w, 400, resp(1001, err.Error(), "", "", nil))
+			return
+		}
+		mdName := filename[:len(filename)-len(".xmind")] + ".md"
+		pending = append(pending, pendingFile{name: mdName, content: md})
+	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") ||
+		strings.HasSuffix(lower, ".tar") || strings.HasSuffix(lower, ".zip"):
+		// 复用 extractArchive 解压，传 nil 不剥离顶级目录
+		entries, errMsg := extractArchive(data, filename)
+		if errMsg != "" {
+			writeJSON(w, 400, resp(1001, errMsg, "", "", nil))
+			return
+		}
+		for name, content := range entries {
+			if !strings.HasSuffix(strings.ToLower(name), ".md") {
+				continue
+			}
+			pending = append(pending, pendingFile{name: name, content: content})
+		}
+	default:
+		writeJSON(w, 400, resp(1001, "仅支持 .md / .xmind / .tar.gz / .tgz / .zip 文件", "", "", nil))
 		return
 	}
-	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": []string{safe}, "total": 1}))
+
+	// 校验：单文件大小
+	for _, p := range pending {
+		bytes := int64(len(p.content))
+		if bytes > maxSingleBytes {
+			writeJSON(w, 400, resp(1001, fmt.Sprintf("文件「%s」超过单文件上限 100KB（当前 %.1fKB），请精简内容后重试", p.name, float64(bytes)/1024), "", "", nil))
+			return
+		}
+	}
+
+	// 校验：文件数量（按文件名去重后的增量）
+	existingNames := make(map[string]bool)
+	for _, m := range existing {
+		existingNames[m.Filename] = true
+	}
+	newCount := 0
+	for _, p := range pending {
+		if !existingNames[p.name] {
+			newCount++
+		}
+	}
+	if len(existing)+newCount > maxFiles {
+		writeJSON(w, 400, resp(1001, fmt.Sprintf("记忆文件数将超过上限 %d 个（当前 %d 个，本次新增 %d 个），请合并或删除部分文件", maxFiles, len(existing), newCount), "", "", nil))
+		return
+	}
+
+	// 校验：总字节数
+	incomingTotal := int64(0)
+	for _, p := range pending {
+		incomingTotal += int64(len(p.content))
+	}
+	existingKeptTotal := int64(0)
+	for _, m := range existing {
+		overwritten := false
+		for _, p := range pending {
+			if p.name == m.Filename {
+				overwritten = true
+				break
+			}
+		}
+		if !overwritten {
+			existingKeptTotal += m.Size
+		}
+	}
+	if existingKeptTotal+incomingTotal > maxTotalBytes {
+		writeJSON(w, 400, resp(1001, fmt.Sprintf("记忆库总量将超过上限 2MB（当前 %.1fKB，本次新增 %.1fKB），请精简内容", float64(existingKeptTotal)/1024, float64(incomingTotal)/1024), "", "", nil))
+		return
+	}
+
+	var uploaded []string
+	for _, p := range pending {
+		safe, err := engine.SaveMemory(h.cfg.Sys.DataDir, p.name, p.content)
+		if err != nil {
+			continue
+		}
+		uploaded = append(uploaded, safe)
+	}
+
+	if len(uploaded) == 0 {
+		writeJSON(w, 400, resp(1001, "没有有效的文件", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": uploaded, "total": len(uploaded)}))
 }
 
 func (h *AdminHandler) HandleMemoryDelete(w http.ResponseWriter, r *http.Request) {
@@ -830,13 +1063,15 @@ func (h *AdminHandler) HandleSessionDelete(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
 		return
 	}
+	// 逻辑删除：该 linkid 下未完成任务标记为 cancelled，session 标记为 closed，
+	cancelled := h.store.CancelByLinkid(session.LinkID)
+	h.store.CloseSession(sessionID)
 	// 删除工作目录
 	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(session.LinkID))
 	if _, err := os.Stat(workDir); err == nil {
 		_ = os.RemoveAll(workDir)
 	}
-	h.store.RemoveSession(sessionID)
-	log.Printf("[admin] session_deleted: %s linkid=%s workDir=%s", sessionID, session.LinkID, workDir)
+	log.Printf("[admin] session_deleted: %s linkid=%s cancelled_tasks=%d", sessionID, session.LinkID, cancelled)
 	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
 }
 
@@ -904,6 +1139,67 @@ func (h *AdminHandler) HandleSessionChat(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sendSSEEvent(w, flusher, map[string]interface{}{"type": "end"})
+}
+
+// HandleChatNew 新建聊天：不绑定公文，发送首条消息并流式返回，session 由 dsh 真实创建
+func (h *AdminHandler) HandleChatNew(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Message == "" {
+		writeJSON(w, 400, resp(1001, "缺少 message", "", "", nil))
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, 500, resp(5000, "SSE not supported", "", "", nil))
+		return
+	}
+
+	linkid := "chat-" + newToken()[:8]
+	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkid))
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		writeJSON(w, 500, resp(5000, "创建工作目录失败: "+err.Error(), "", "", nil))
+		return
+	}
+
+	// 写入 CLAUDE.md
+	if err := engine.BuildClaudeMd(workDir, h.store, h.cfg.RawConfig(), h.cfg.Sys.DataDir); err != nil {
+		writeJSON(w, 500, resp(5000, "写入 CLAUDE.md 失败: "+err.Error(), "", "", nil))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ds := harness.NewClient(h.cfg.LLM)
+	if err := ds.Start(); err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "启动运行时失败: " + err.Error()})
+		return
+	}
+	defer ds.Close()
+
+	capturedSessionId := ""
+	result, err := ds.Run("s-"+linkid, body.Message, func(n harness.Notification) {
+		if n.Method == "session.event" {
+			if sid, _ := n.Payload["sessionId"].(string); sid != "" && capturedSessionId == "" {
+				capturedSessionId = sid
+				// 同时写入 sessions 表，前端据此发起后续续聊
+				_ = h.store.UpsertSession(sid, linkid)
+			}
+		}
+		data, _ := json.Marshal(n)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	})
+	if err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": err.Error()})
+		return
+	}
+	_ = result
+	sendSSEEvent(w, flusher, map[string]interface{}{"type": "end", "session_id": capturedSessionId, "linkid": linkid})
 }
 
 // ── 服务器信息（公开） ──

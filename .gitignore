@@ -3,7 +3,7 @@ bin/deepseek-harness-sdk-runtime-*
 bin/linux-x64/
 
 # 编译产物
-dp-agt-dsh
+/dp-agt-dsh
 *.exe
 
 # 数据目录
@@ -12,6 +12,7 @@ data/*.db-shm
 data/*.db-wal
 data/secrets.key
 data/cfg.yml
+data/*.csv
 data/mock.json
 data/mock1.json
 data/logs/
