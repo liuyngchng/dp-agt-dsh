@@ -483,6 +483,38 @@ header p {
     box-shadow: 0 0 0 3px rgba(75, 108, 183, 0.12);
 }
 
+/* ---- 文件上传 input：统一“Browse”按钮样式 ---- */
+input[type="file"] {
+    font-size: 0.85rem;
+    color: #666;
+    padding: 8px 12px;
+    border: 2px dashed #cfd6e4;
+    border-radius: 8px;
+    background: #fafbfd;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+input[type="file"]:hover {
+    border-color: #4b6cb7;
+    background: #f2f5fb;
+}
+input[type="file"]::file-selector-button {
+    padding: 8px 16px;
+    margin-right: 12px;
+    border: none;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #4b6cb7, #3a5a9e);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+input[type="file"]::file-selector-button:hover {
+    background: linear-gradient(135deg, #3a5a9e, #2c487e);
+    box-shadow: 0 4px 12px rgba(75, 108, 183, 0.3);
+}
+
 .form-g textarea {
     font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
     font-size: 0.85rem;

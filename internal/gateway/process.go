@@ -3,7 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -75,7 +75,7 @@ func (h *ProcessHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// 入队
 	item := h.queue.Enqueue(iface, body)
-	log.Printf("[process] enqueued: task=%s link=%s path=%s", item.TaskID, linkID, interfacePath)
+	slog.Info("enqueued", "task", item.TaskID, "link", linkID, "path", interfacePath)
 
 	writeJSON(w, http.StatusOK, resp(0, "success", item.TaskID, linkID, nil))
 }

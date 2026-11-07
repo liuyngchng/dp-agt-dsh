@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -83,7 +83,7 @@ func (q *Queue) recoverOrphanedTasks() {
 		}
 	}
 	if resumed > 0 || killed > 0 {
-		log.Printf("[queue] recovered: %d resumed, %d killed", resumed, killed)
+		slog.Info("recovered", "resumed", resumed, "killed", killed)
 		if resumed > 0 {
 			go q.pump()
 		}
@@ -180,7 +180,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	linkID, _ := item.Body["linkid"].(string)
 
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"status": string(store.StatusProcessing)})
-	log.Printf("[queue] processing: task=%s link=%s path=%s", taskID, linkID, item.Path)
+	slog.Info("processing", "task", taskID, "link", linkID, "path", item.Path)
 
 	// 读提示词模板
 	template := LoadPromptFromDisk(item.Path)
@@ -225,7 +225,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	if isMock == "mock" || isMockFlag {
 		// mock 模式也记录一个 session，保证前端「会话记录」「会话管理」可见。
 		_ = q.store.UpsertSession(sessionID, linkID)
-		log.Printf("[queue] mock: task=%s path=%s prompt_rendered=%d bytes", taskID, item.Path, len(rendered))
+		slog.Info("mock", "task", taskID, "path", item.Path, "prompt_rendered_bytes", len(rendered))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":      string(store.StatusCompleted),
 			"session_id":  sessionID,
@@ -246,7 +246,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	// resume 或新建
 	if resumeID != "" {
 		if err := q.ds.ResumeSession(resumeID); err != nil {
-			log.Printf("[queue] resume failed for %s, starting fresh: %v", resumeID, err)
+			slog.Warn("resume failed, starting fresh", "session", resumeID, "err", err)
 			sessionID = "s-" + taskID
 			_ = q.store.UpsertSession(sessionID, linkID)
 			_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
@@ -280,7 +280,7 @@ func (q *Queue) processItem(item *QueueItem) {
 			"finished_ts":   store.TimeNowMs(),
 		})
 		PublishStream(sessionID, harness.Notification{Method: "end"})
-		log.Printf("[queue] task=%s link=%s failed: %v", taskID, linkID, err)
+		slog.Error("task failed", "task", taskID, "link", linkID, "err", err)
 		return
 	}
 
@@ -297,7 +297,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	})
 
 	PublishStream(sessionID, harness.Notification{Method: "end"})
-	log.Printf("[queue] task=%s link=%s completed", taskID, linkID)
+	slog.Info("task completed", "task", taskID, "link", linkID)
 }
 
 func (q *Queue) ensureDSH() error {

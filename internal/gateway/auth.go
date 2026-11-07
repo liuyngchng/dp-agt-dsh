@@ -7,7 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -52,7 +52,7 @@ func (a *Auth) APITokenMiddleware(next http.Handler) http.Handler {
 		respondUnauthorized := func(reason string) {
 			resp := resp(1003, "Unauthorized: 无效或缺失的 X-Api-Key / Authorization Bearer Token", "", "", nil)
 			// 记录校验失败日志：含来源 IP、路径、原因，但不记录 token 明文/哈希
-			log.Printf("[auth] api_auth_failed path=%s ip=%s reason=%s has_token=%v", r.URL.Path, r.RemoteAddr, reason, extractAPIToken(r) != "")
+			slog.Warn("api_auth_failed", "path", r.URL.Path, "ip", r.RemoteAddr, "reason", reason, "has_token", extractAPIToken(r) != "")
 			writeJSON(w, http.StatusUnauthorized, resp)
 		}
 

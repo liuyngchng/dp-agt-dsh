@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -136,7 +136,7 @@ func (s *Store) migrate() error {
 			"INSERT INTO users (username, password_hash, role, note, must_change_pwd, user_version, created_at, created_ts) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
 			"admin", hash, 1, "默认管理员", 1, timeFmt(now), now,
 		)
-		log.Println("[store] seeded default admin user (admin/admin)")
+		slog.Info("seeded default admin user (admin/admin)")
 	}
 	return nil
 }

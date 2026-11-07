@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	log.Println("==== AI 数字员工 (dsh) starting ====")
+	slog.Info("==== AI 数字员工 (dsh) starting ====")
 
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
@@ -31,9 +31,10 @@ func main() {
 	}
 	cfg, err := config.Load(dataDir)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("config loaded: port=%d model=%s provider=%s", cfg.Server.Port, cfg.LLM.Model, cfg.LLM.Provider)
+	slog.Info("config loaded", "port", cfg.Server.Port, "model", cfg.LLM.Model, "provider", cfg.LLM.Provider)
 
 	// 目录
 	os.MkdirAll(cfg.Sys.DataDir, 0755)
@@ -43,13 +44,15 @@ func main() {
 	// 存储
 	s, err := store.Open(cfg.Sys.DataDir)
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		slog.Error("open store", "err", err)
+		os.Exit(1)
 	}
 	defer s.Close()
 
 	// 加密
 	if err := store.InitCrypto(cfg.Sys.DataDir); err != nil {
-		log.Fatalf("init crypto: %v", err)
+		slog.Error("init crypto", "err", err)
+		os.Exit(1)
 	}
 
 	// 迁移：将旧版明文 api_auth_token 哈希化（一次性）
@@ -57,7 +60,7 @@ func main() {
 
 	// 迁移：为历史遗留的无 session 任务补齐 session（一次性，幂等）
 	if n := s.BackfillTaskSessions(); n > 0 {
-		log.Printf("backfilled sessions for %d linkids", n)
+		slog.Info("backfilled sessions", "linkids", n)
 	}
 
 	// 提示词
@@ -69,12 +72,12 @@ func main() {
 		for _, pf := range promptFiles {
 			_ = s.UpsertInterface(pf.Path+"-id", pf.Name, pf.Path, "")
 		}
-		log.Printf("synced %d interfaces from prompts/", len(promptFiles))
+		slog.Info("synced interfaces from prompts/", "count", len(promptFiles))
 	}
 
 	// 任务队列
 	q := engine.NewQueue(cfg, s)
-	log.Println("task queue ready")
+	slog.Info("task queue ready")
 
 	// 认证
 	auth := gateway.NewAuth(cfg, s)
@@ -368,18 +371,20 @@ func main() {
 
 	// ── 启动 ──
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	log.Printf("listening on %s", addr)
+	slog.Info("listening", "addr", addr)
 
 	// 始终 HTTPS（与 dp-agt 一致）。证书由 build/build.sh 构建时生成到 deploy/certs/；
 	// 本地开发未生成证书时自动生成自签名证书，保证服务可启动。
 	certFile, keyFile := resolveTLSCerts(cfg)
 	if certFile == "" || keyFile == "" {
-		log.Fatalf("HTTPS 证书缺失，无法启动。请运行 build/build.sh 构建镜像，或手动生成 deploy/certs/cert.pem、key.pem")
+		slog.Error("HTTPS 证书缺失，无法启动。请运行 build/build.sh 构建镜像，或手动生成 deploy/certs/cert.pem、key.pem")
+		os.Exit(1)
 	}
 
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		log.Fatalf("加载 HTTPS 证书失败: %v", err)
+		slog.Error("加载 HTTPS 证书失败", "err", err)
+		os.Exit(1)
 	}
 
 	srv := &http.Server{
@@ -398,14 +403,15 @@ func main() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
-		log.Println("shutting down...")
+		slog.Info("shutting down...")
 		srv.Close()
 	}()
 
 	if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-		log.Fatalf("listen: %v", err)
+		slog.Error("listen", "err", err)
+		os.Exit(1)
 	}
-	log.Println("server stopped")
+	slog.Info("server stopped")
 }
 
 // resolveTLSCerts 返回 HTTPS 证书与私钥路径。
@@ -439,11 +445,11 @@ func resolveTLSCerts(cfg *config.Config) (string, string) {
 		"-subj", "/C=CN/O=AI数字员工/CN=localhost",
 		"-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("[tls] 自动生成自签名证书失败: %v (%s)", err, strings.TrimSpace(string(out)))
+		slog.Warn("自动生成自签名证书失败", "err", err, "openssl_output", strings.TrimSpace(string(out)))
 		return "", ""
 	}
 	if fileExists(certFile) && fileExists(keyFile) {
-		log.Printf("[tls] 已自动生成自签名证书: %s", certFile)
+		slog.Info("已自动生成自签名证书", "cert_file", certFile)
 		return certFile, keyFile
 	}
 	return "", ""
@@ -459,7 +465,7 @@ func cleanupExpired(s *store.Store, cfg *config.Config) {
 	deletedTasks, expiredSessions := s.CleanupExpired(retentionDays)
 
 	if len(expiredSessions) > 0 {
-		log.Printf("cleanup: %d expired sessions", len(expiredSessions))
+		slog.Info("cleanup", "expired_sessions", len(expiredSessions))
 		activeLinks := s.ActiveSessionLinkIDs()
 		tasksDir := cfg.Sys.DataDir + "/tasks"
 		if entries, err := os.ReadDir(tasksDir); err == nil {
@@ -470,7 +476,7 @@ func cleanupExpired(s *store.Store, cfg *config.Config) {
 			}
 		}
 	}
-	log.Printf("cleanup done: %d tasks, %d sessions", deletedTasks, len(expiredSessions))
+	slog.Info("cleanup done", "tasks", deletedTasks, "sessions", len(expiredSessions))
 }
 
 // migrateAPITokenToHash 将旧版明文 api_auth_token 哈希化（一次性）。
@@ -486,5 +492,5 @@ func migrateAPITokenToHash(s *store.Store) {
 	sum := sha256.Sum256([]byte(raw))
 	hash := hex.EncodeToString(sum[:])
 	_ = s.SetConfig("api_auth_token", hash, "对外 API 认证 Token（SHA-256 哈希）")
-	log.Println("api_token_migrated_to_hash")
+	slog.Info("api_token_migrated_to_hash")
 }

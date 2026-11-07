@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,12 +48,16 @@ type Client struct {
 	stdout *bufio.Scanner
 	stderr io.ReadCloser
 
-	mu       sync.Mutex
-	pending  map[string]chan *json.RawMessage
-	nextID   atomic.Int64
+	mu      sync.Mutex
+	pending map[string]chan *json.RawMessage
+	nextID  atomic.Int64
 
-	subMu  sync.Mutex
-	subs   map[int64]*notificationSub
+	// pending 独立加锁：readLoop 投递响应时不与 Start/request 的生命周期锁 c.mu 竞争，
+	// 否则 Start 持有 c.mu 等待 initialize 响应时，readLoop 拿不到 c.mu 会死锁超时。
+	pendingMu sync.Mutex
+
+	subMu   sync.Mutex
+	subs    map[int64]*notificationSub
 	nextSub atomic.Int64
 
 	stderrLines []string
@@ -155,7 +159,7 @@ func (c *Client) Start() error {
 		c.killLocked()
 		return fmt.Errorf("parse initialize result: %w", err)
 	}
-	log.Printf("[dsh] initialized: server=%s v%s model=%s", initResult.ServerInfo.Name, initResult.ServerInfo.Version, c.model)
+	slog.Info("initialized", "server", initResult.ServerInfo.Name, "version", initResult.ServerInfo.Version, "model", c.model)
 	c.initialized = true
 	return nil
 }
@@ -188,11 +192,13 @@ func (c *Client) Close() error {
 		<-done
 	}
 
+	c.pendingMu.Lock()
 	for id, ch := range c.pending {
 		close(ch)
 		delete(c.pending, id)
 	}
 	c.pending = make(map[string]chan *json.RawMessage)
+	c.pendingMu.Unlock()
 
 	c.cmd = nil
 	c.initialized = false
@@ -304,17 +310,23 @@ func (c *Client) requestLocked(method string, params interface{}) (*json.RawMess
 
 	id := fmt.Sprintf("%d", c.nextID.Add(1))
 	ch := make(chan *json.RawMessage, 1)
+	c.pendingMu.Lock()
 	c.pending[id] = ch
+	c.pendingMu.Unlock()
 
 	req := JsonRpcRequest{Jsonrpc: "2.0", ID: id, Method: method, Params: params}
 	data, err := json.Marshal(req)
 	if err != nil {
+		c.pendingMu.Lock()
 		delete(c.pending, id)
+		c.pendingMu.Unlock()
 		return nil, err
 	}
 
 	if _, err := fmt.Fprintf(c.stdin, "%s\n", string(data)); err != nil {
+		c.pendingMu.Lock()
 		delete(c.pending, id)
+		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("%w: %v", ErrTransportClosed, err)
 	}
 
@@ -329,7 +341,9 @@ func (c *Client) requestLocked(method string, params interface{}) (*json.RawMess
 		}
 		return resp, nil
 	case <-time.After(30 * time.Second):
+		c.pendingMu.Lock()
 		delete(c.pending, id)
+		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("request timeout: %s", method)
 	}
 }
@@ -375,7 +389,7 @@ func (c *Client) readLoop() {
 			var idStr string
 			_ = json.Unmarshal(frame.ID, &idStr)
 
-			c.mu.Lock()
+			c.pendingMu.Lock()
 			ch, ok := c.pending[idStr]
 			if ok {
 				if frame.Error != nil {
@@ -390,7 +404,7 @@ func (c *Client) readLoop() {
 				}
 				delete(c.pending, idStr)
 			}
-			c.mu.Unlock()
+			c.pendingMu.Unlock()
 			continue
 		}
 

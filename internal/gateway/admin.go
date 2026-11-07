@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -655,7 +655,7 @@ func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.R
 		writeJSON(w, 500, resp(5000, "保存失败: "+err.Error(), "", "", nil))
 		return
 	}
-	log.Printf("[admin] imported %d config rows", len(rows))
+	slog.Info("imported config rows", "count", len(rows))
 	writeJSON(w, 200, resp(0, "导入成功", "", "", map[string]interface{}{"imported": len(rows), "keys": keys}))
 }
 
@@ -807,7 +807,7 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 	for k := range files {
 		fileList = append(fileList, k)
 	}
-	log.Printf("[admin] prompt archive uploaded: %d files, %d warnings", len(fileList), len(warnings))
+	slog.Info("prompt archive uploaded", "files", len(fileList), "warnings", len(warnings))
 	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"files": fileList, "total": len(fileList), "warnings": warnings}))
 }
 
@@ -1072,7 +1072,7 @@ func (h *AdminHandler) HandleSessionDelete(w http.ResponseWriter, r *http.Reques
 	if _, err := os.Stat(workDir); err == nil {
 		_ = os.RemoveAll(workDir)
 	}
-	log.Printf("[admin] session_deleted: %s linkid=%s cancelled_tasks=%d", sessionID, session.LinkID, cancelled)
+	slog.Info("session_deleted", "session", sessionID, "linkid", session.LinkID, "cancelled_tasks", cancelled)
 	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
 }
 
@@ -1360,5 +1360,4 @@ func extractArchive(buf []byte, origName string) (map[string]string, string) {
 var _ = bytes.NewReader
 var _ = zip.Reader{}
 var _ = io.EOF
-var _ = log.Println
 var _ = fmt.Sprintf
