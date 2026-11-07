@@ -212,11 +212,16 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 	}
 	memItems := ListMemories(dataDir)
 	if len(memItems) > 0 {
+		// 记忆库目录转成绝对路径，避免 dsh 以 workdir 为基准解析相对路径时找不到文件
+		memAbs, err := filepath.Abs(MemoryDir(dataDir))
+		if err != nil {
+			memAbs = MemoryDir(dataDir)
+		}
 		var b strings.Builder
 		b.WriteString("\n## 业务知识记忆库\n\n")
-		b.WriteString("以下是可用的公司业务背景知识文件，均位于 `data/memory/` 目录。")
+		b.WriteString("以下是可用的公司业务背景知识文件，均位于 `" + memAbs + "` 目录。")
 		b.WriteString("当任务需要了解公司组织架构、领导班子分工、各部门职责范围或业务流程规则时，")
-		b.WriteString("使用 Read 工具读取对应文件（路径如 `data/memory/公司领导班子成员工作分工.md`）。\n\n")
+		b.WriteString("使用 Read 工具读取对应文件（路径见下表）。\n\n")
 		b.WriteString("| 文件 | 说明 |\n")
 		b.WriteString("|------|------|\n")
 		for _, item := range memItems {
@@ -224,7 +229,7 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 			if desc == "" {
 				desc = item.Title
 			}
-			b.WriteString("| " + item.Filename + " | " + desc + " |\n")
+			b.WriteString("| " + filepath.Join(memAbs, item.Filename) + " | " + desc + " |\n")
 		}
 		template += b.String()
 	}
