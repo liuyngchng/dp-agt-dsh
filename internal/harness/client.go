@@ -243,7 +243,7 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 					// SessionEvent.Data 存的是事件真正的数据（event["data"]），
 					// 而不是整个 event 外壳，否则会双重嵌套导致 FinalResponse 读不到 content。
 					eventData, _ := event["data"].(map[string]interface{})
-					se := SessionEvent{Type: getStr(event, "type"), Data: eventData}
+					se := SessionEvent{Type: getStr(event, "type"), Data: eventData, Time: getInt64(event, "time")}
 					events = append(events, se)
 
 					if !receivedPrompt && se.Type == "agent/inbox/spliced" {
@@ -530,4 +530,16 @@ func getStr(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func getInt64(m map[string]interface{}, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }

@@ -269,6 +269,7 @@ func (q *Queue) processItem(item *QueueItem) {
 				allEvents = append(allEvents, harness.SessionEvent{
 					Type: getStr(ev, "type"),
 					Data: getMap(ev, "data"), // 内层 data，不含外层外壳
+					Time: getInt64(ev, "time"),
 				})
 			}
 		}
@@ -367,6 +368,18 @@ func getMap(m map[string]interface{}, key string) map[string]interface{} {
 		return v
 	}
 	return nil
+}
+
+func getInt64(m map[string]interface{}, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }
 
 // ── SSE 事件总线 ──

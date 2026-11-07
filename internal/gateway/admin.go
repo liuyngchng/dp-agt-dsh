@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"dp-agt-dsh/internal/config"
 	"dp-agt-dsh/internal/engine"
@@ -382,10 +383,26 @@ func notificationToFrontend(n harness.Notification) []map[string]interface{} {
 	message = convertMessageToFrontend(message)
 
 	msg := map[string]interface{}{"type": role, "message": message}
-	if ts := payload["time"]; ts != nil {
-		msg["timestamp"] = ts
+	if ts := ev["time"]; ts != nil {
+		msg["timestamp"] = formatDshTime(ts)
 	}
 	return []map[string]interface{}{msg}
+}
+
+// formatDshTime 把 dsh 的毫秒时间戳转为 "YYYY-MM-DD HH:MM:SS.SSS" 格式
+func formatDshTime(v interface{}) string {
+	var ms int64
+	switch n := v.(type) {
+	case float64:
+		ms = int64(n)
+	case int64:
+		ms = n
+	case json.Number:
+		ms, _ = n.Int64()
+	default:
+		return ""
+	}
+	return time.UnixMilli(ms).Format("2006-01-02 15:04:05.000")
 }
 
 // convertMessageToFrontend 把 dsh 的 message 内容块转换为前端 formatSessionMessages 期望的格式。
@@ -474,8 +491,8 @@ func convertEventsToFrontend(rawEvents []map[string]interface{}) []map[string]in
 		}
 		message = convertMessageToFrontend(message)
 		msg := map[string]interface{}{"type": role, "message": message}
-		if ts := payload["time"]; ts != nil {
-			msg["timestamp"] = ts
+		if ts := ev["time"]; ts != nil {
+			msg["timestamp"] = formatDshTime(ts)
 		}
 		out = append(out, msg)
 	}

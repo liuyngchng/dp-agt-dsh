@@ -108,6 +108,7 @@ type RunResult struct {
 type SessionEvent struct {
 	Type string                 `json:"type"`
 	Data map[string]interface{} `json:"data"`
+	Time int64                  `json:"time"` // dsh 事件外层 time（毫秒时间戳）
 }
 
 // FinalResponse 从 events 中提取最后一个 assistant/message 的文本
