@@ -503,7 +503,7 @@ func (h *AdminHandler) HandleUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range users {
 		views = append(views, userView{ID: u.ID, UserName: u.Username, Role: u.Role, Note: u.Note, CreatedAt: u.CreatedAt})
 	}
-	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"users": views}))
+	writeJSON(w, 200, resp(0, "success", "", "", views))
 }
 
 func (h *AdminHandler) HandleUserCreate(w http.ResponseWriter, r *http.Request) {

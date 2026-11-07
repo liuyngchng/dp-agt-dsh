@@ -18,6 +18,10 @@ data/mock1.json
 data/logs/
 data/tasks/
 data/dsh-home/
+data/memory/
+
+# HTTPS 证书（build.sh 自动生成，与 dp-agt 对齐）
+deploy/certs/
 
 # Go
 

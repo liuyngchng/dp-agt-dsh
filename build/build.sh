@@ -103,6 +103,28 @@ if ! docker image inspect ubuntu:24.04 >/dev/null 2>&1; then
   exit 1
 fi
 
+# ---- HTTPS certs ----
+# 服务强制 HTTPS，证书必须存在；缺少 openssl 时直接报错退出。
+# 自签名证书生成一次后复用，与 dp-agt build.sh 参数一致。
+CERTS_DIR="$PROJECT_ROOT/deploy/certs"
+CERT_FILE="$CERTS_DIR/cert.pem"
+KEY_FILE="$CERTS_DIR/key.pem"
+mkdir -p "$CERTS_DIR"
+
+if [[ ! -f "$CERT_FILE" || ! -f "$KEY_FILE" ]]; then
+  if ! command -v openssl &>/dev/null; then
+    echo "[build] ERROR: 未找到 openssl，无法生成 HTTPS 证书（服务强制 HTTPS）" >&2
+    exit 1
+  fi
+  echo "[build] 生成自签名 HTTPS 证书 (RSA-2048, 10年)"
+  openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+    -keyout "$KEY_FILE" \
+    -out "$CERT_FILE" \
+    -subj "/C=CN/O=AI数字员工/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+fi
+echo "[build] HTTPS 证书已就绪: $CERTS_DIR"
+
 echo "=== Docker buildx build ==="
 docker buildx build \
     "${DOCKER_BUILD_ARGS[@]+"${DOCKER_BUILD_ARGS[@]}"}" \
@@ -125,5 +147,5 @@ echo "============================================"
 echo ""
 echo "Run with:"
 echo ""
-echo "  ./build/deploy.sh start"
+echo "  ./build/deploy.sh"
 echo ""

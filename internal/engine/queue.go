@@ -111,6 +111,20 @@ func (q *Queue) Enqueue(iface *store.AgentInterface, body map[string]interface{}
 	}
 	_ = q.store.CreateTaskLog(t)
 
+	// 任务提交即创建/复用 session，保证「会话管理」「会话记录」对 pending 任务也立即可见。
+	// session_id 采用 "s-"+taskID，后续处理阶段如复用旧 session 会再更新。
+	if existing, _ := q.store.GetSessionByLinkid(linkID); existing != nil {
+		_ = q.store.TouchSession(existing.SessionID)
+		t.SessionID = existing.SessionID
+	} else {
+		sessionID := "s-" + taskID
+		_ = q.store.UpsertSession(sessionID, linkID)
+		t.SessionID = sessionID
+	}
+	if t.SessionID != "" {
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": t.SessionID})
+	}
+
 	item := &QueueItem{TaskID: taskID, Path: iface.Path, Iface: iface, Body: body}
 	q.mu.Lock()
 	q.pending = append(q.pending, item)
@@ -188,6 +202,15 @@ func (q *Queue) processItem(item *QueueItem) {
 		q.store.TouchSession(resumeID)
 	}
 
+	// 立即写入 session 和 task_logs 的 session_id，保证任务提交后「会话管理」立即可见、
+	// 且后续无论 dsh 启动/执行是否失败，「会话记录」都可点击查看。
+	sessionID := resumeID
+	if sessionID == "" {
+		sessionID = "s-" + taskID
+	}
+	_ = q.store.UpsertSession(sessionID, linkID)
+	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
+
 	// 创建/复用 workdir
 	workDir := filepath.Join(q.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkID))
 	_, err := BuildTaskDir(workDir, q.store, q.cfg.RawConfig(), q.cfg.Sys.DataDir)
@@ -201,15 +224,11 @@ func (q *Queue) processItem(item *QueueItem) {
 	isMockFlag, _ := item.Body["is_mock"].(bool)
 	if isMock == "mock" || isMockFlag {
 		// mock 模式也记录一个 session，保证前端「会话记录」「会话管理」可见。
-		mockSessionID := resumeID
-		if mockSessionID == "" {
-			mockSessionID = "s-" + taskID
-		}
-		_ = q.store.UpsertSession(mockSessionID, linkID)
+		_ = q.store.UpsertSession(sessionID, linkID)
 		log.Printf("[queue] mock: task=%s path=%s prompt_rendered=%d bytes", taskID, item.Path, len(rendered))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":      string(store.StatusCompleted),
-			"session_id":  mockSessionID,
+			"session_id":  sessionID,
 			"sdk_output":  `{"note": "mock mode - dsh not invoked"}`,
 			"sdk_trace":   "[]",
 			"finished_at": store.TimeNowFmt(),
@@ -224,22 +243,15 @@ func (q *Queue) processItem(item *QueueItem) {
 		return
 	}
 
-	sessionID := resumeID
-	if sessionID == "" {
-		sessionID = "s-" + taskID
-	}
-
 	// resume 或新建
 	if resumeID != "" {
 		if err := q.ds.ResumeSession(resumeID); err != nil {
 			log.Printf("[queue] resume failed for %s, starting fresh: %v", resumeID, err)
 			sessionID = "s-" + taskID
+			_ = q.store.UpsertSession(sessionID, linkID)
+			_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 		}
 	}
-
-	// 立即写入 session 和 task_logs 的 session_id，保证处理中前端即可见（对齐 dp-agt 的 onSessionId 回调）。
-	_ = q.store.UpsertSession(sessionID, linkID)
-	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 
 	var allEvents []harness.SessionEvent
 

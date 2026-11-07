@@ -527,6 +527,46 @@ func (s *Store) RemoveSession(sessionID string) bool {
 	return n > 0
 }
 
+// BackfillTaskSessions 为历史遗留任务补齐 session：老版本只有在 dsh 启动成功后
+// 才写入 session，导致部分失败任务无 session_id。这里按 linkid 分组，为每个缺少
+// session_id 的 linkid 创建一条 session（session_id = "s-"+task_id），并把该 linkid
+// 下所有任务的 session_id 回填。返回补齐的 linkid 数量。
+func (s *Store) BackfillTaskSessions() int {
+	rows, err := s.db.Query(`SELECT DISTINCT linkid FROM task_logs
+		WHERE COALESCE(session_id,'') = '' AND COALESCE(linkid,'') != ''`)
+	if err != nil {
+		return 0
+	}
+	var linkIDs []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			linkIDs = append(linkIDs, id)
+		}
+	}
+	rows.Close()
+
+	backfilled := 0
+	for _, linkID := range linkIDs {
+		// 该 linkid 若已有 session 则直接复用其 session_id
+		var existingSid string
+		err := s.db.QueryRow("SELECT session_id FROM sessions WHERE linkid = ? LIMIT 1", linkID).Scan(&existingSid)
+		sessionID := existingSid
+		if err != nil || sessionID == "" {
+			var taskID string
+			if err := s.db.QueryRow("SELECT task_id FROM task_logs WHERE linkid = ? ORDER BY created_ts ASC LIMIT 1", linkID).Scan(&taskID); err != nil || taskID == "" {
+				continue
+			}
+			sessionID = "s-" + taskID
+			_ = s.UpsertSession(sessionID, linkID)
+		}
+		if _, err := s.db.Exec("UPDATE task_logs SET session_id = ? WHERE linkid = ? AND COALESCE(session_id,'') = ''", sessionID, linkID); err == nil {
+			backfilled++
+		}
+	}
+	return backfilled
+}
+
 // ── PromptConfig（加密 KV） ──
 
 var secretKey []byte

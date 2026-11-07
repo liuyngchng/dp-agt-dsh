@@ -53,6 +53,10 @@ COPY bin/linux-x64 /app/bin/linux-x64
 COPY prompts/ /app/prompts/
 COPY web/ /app/web/
 
+# 复制 HTTPS 证书（由 build.sh 生成，直接打入镜像，chmod 644 保证任意 uid 可读）
+COPY deploy/certs/ /app/deploy/certs/
+RUN chmod 644 /app/deploy/certs/cert.pem /app/deploy/certs/key.pem
+
 # 数据目录（容器挂载卷）
 RUN mkdir -p /app/data/tasks /app/data/logs /app/data/dsh-home
 

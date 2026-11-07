@@ -2,12 +2,15 @@ package main
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -51,6 +54,11 @@ func main() {
 
 	// 迁移：将旧版明文 api_auth_token 哈希化（一次性）
 	migrateAPITokenToHash(s)
+
+	// 迁移：为历史遗留的无 session 任务补齐 session（一次性，幂等）
+	if n := s.BackfillTaskSessions(); n > 0 {
+		log.Printf("backfilled sessions for %d linkids", n)
+	}
 
 	// 提示词
 	engine.InitPrompts(cfg.Sys.DataDir)
@@ -362,12 +370,28 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("listening on %s", addr)
 
+	// 始终 HTTPS（与 dp-agt 一致）。证书由 build/build.sh 构建时生成到 deploy/certs/；
+	// 本地开发未生成证书时自动生成自签名证书，保证服务可启动。
+	certFile, keyFile := resolveTLSCerts(cfg)
+	if certFile == "" || keyFile == "" {
+		log.Fatalf("HTTPS 证书缺失，无法启动。请运行 build/build.sh 构建镜像，或手动生成 deploy/certs/cert.pem、key.pem")
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatalf("加载 HTTPS 证书失败: %v", err)
+	}
+
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Minute,
 		IdleTimeout:  60 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
 	}
 
 	go func() {
@@ -378,10 +402,56 @@ func main() {
 		srv.Close()
 	}()
 
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Println("server stopped")
+}
+
+// resolveTLSCerts 返回 HTTPS 证书与私钥路径。
+// 优先使用 deploy/certs/（与 dp-agt 一致），其次 data/certs/，最后允许通过
+// TLS_CERT_FILE / TLS_KEY_FILE 环境变量指定。若都不存在则尝试自动生成自签名证书。
+func resolveTLSCerts(cfg *config.Config) (string, string) {
+	candidates := [][2]string{
+		{"deploy/certs/cert.pem", "deploy/certs/key.pem"},
+		{filepath.Join(cfg.Sys.DataDir, "certs", "cert.pem"), filepath.Join(cfg.Sys.DataDir, "certs", "key.pem")},
+	}
+	if v := os.Getenv("TLS_CERT_FILE"); v != "" {
+		if k := os.Getenv("TLS_KEY_FILE"); k != "" {
+			candidates = append([][2]string{{v, k}}, candidates...)
+		}
+	}
+	for _, c := range candidates {
+		if fileExists(c[0]) && fileExists(c[1]) {
+			return c[0], c[1]
+		}
+	}
+
+	// 自动生成自签名证书（本地开发兜底），参数与 dp-agt build.sh 保持一致
+	certFile := "deploy/certs/cert.pem"
+	keyFile := "deploy/certs/key.pem"
+	if err := os.MkdirAll(filepath.Dir(certFile), 0755); err != nil {
+		return "", ""
+	}
+	cmd := exec.Command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256",
+		"-days", "3650", "-nodes",
+		"-keyout", keyFile, "-out", certFile,
+		"-subj", "/C=CN/O=AI数字员工/CN=localhost",
+		"-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("[tls] 自动生成自签名证书失败: %v (%s)", err, strings.TrimSpace(string(out)))
+		return "", ""
+	}
+	if fileExists(certFile) && fileExists(keyFile) {
+		log.Printf("[tls] 已自动生成自签名证书: %s", certFile)
+		return certFile, keyFile
+	}
+	return "", ""
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 func cleanupExpired(s *store.Store, cfg *config.Config) {

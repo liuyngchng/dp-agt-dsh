@@ -72,7 +72,7 @@ case "${1:-start}" in
       --restart unless-stopped \
       "$IMAGE"
 
-    PROTO="http"
+    PROTO="https"
     echo ""
     echo "[deploy] 等待服务启动（最多 30 秒）..."
     echo ""
