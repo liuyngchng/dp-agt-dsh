@@ -219,8 +219,8 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 		}
 		var b strings.Builder
 		b.WriteString("\n## 业务知识记忆库\n\n")
-		b.WriteString("以下是可用的公司业务背景知识文件，均位于 `" + memAbs + "` 目录。")
-		b.WriteString("当任务需要了解公司组织架构、领导班子分工、各部门职责范围或业务流程规则时，")
+		b.WriteString("以下是可用的业务背景知识文件，均位于 `" + memAbs + "` 目录。")
+		b.WriteString("当任务需要相关业务背景知识时，")
 		b.WriteString("使用 Read 工具读取对应文件（路径见下表）。\n\n")
 		b.WriteString("| 文件 | 说明 |\n")
 		b.WriteString("|------|------|\n")

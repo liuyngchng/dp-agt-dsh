@@ -47,7 +47,7 @@
                 <!-- Tab 2：提示词模板 -->
                 <div class="sub-panel" id="sub-templates">
                     <div id="previewWrap" style="display:none;">
-                        <div id="previewFiles" style="display:flex;flex-direction:column;gap:12px;"></div>
+                        <div id="previewFiles" class="prompt-file-list"></div>
                     </div>
                 </div>
 
@@ -76,7 +76,9 @@
                         <span style="color:#888;font-size:0.82rem;margin-left:12px;">首次使用时内置默认模板，上传后下载即为上次上传的内容</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:12px;">
-                        <input type="file" id="tarFileInput" accept=".tar,.tar.gz,.tgz,.zip" style="flex:1;">
+                        <input type="file" id="tarFileInput" accept=".tar,.tar.gz,.tgz,.zip" style="display:none;">
+                        <label for="tarFileInput" class="file-btn"><i class="fas fa-folder-open"></i> 选择文件</label>
+                        <span class="file-name" id="tarFileName" style="flex:1;">未选择文件</span>
                         <button class="cfg-btn cfg-btn-save" onclick="uploadTar()"><i class="fas fa-upload"></i> 上传</button>
                     </div>
                     <div id="tarResult" style="margin-top:12px;"></div>
@@ -89,7 +91,9 @@
                         <span style="color:#888;font-size:0.82rem;margin-left:12px;">格式：key, value, 说明（三列）</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:12px;">
-                        <input type="file" id="csvFileInput" accept=".csv" style="flex:1;">
+                        <input type="file" id="csvFileInput" accept=".csv" style="display:none;">
+                        <label for="csvFileInput" class="file-btn"><i class="fas fa-folder-open"></i> 选择文件</label>
+                        <span class="file-name" id="csvFileName" style="flex:1;">未选择文件</span>
                         <button class="cfg-btn cfg-btn-save" onclick="uploadCsv()"><i class="fas fa-upload"></i> 上传</button>
                     </div>
                     <div id="csvResult" style="margin-top:12px;"></div>
@@ -120,7 +124,9 @@
                 <!-- Tab 2：文件上传 -->
                 <div class="sub-panel" id="sub-memory-upload">
                     <div style="display:flex;align-items:center;gap:12px;max-width:640px;">
-                        <input type="file" id="memoryFileInput" accept=".md,.xmind,.tar,.tar.gz,.tgz,.zip" style="flex:1;">
+                        <input type="file" id="memoryFileInput" accept=".md,.xmind,.tar,.tar.gz,.tgz,.zip" style="display:none;">
+                        <label for="memoryFileInput" class="file-btn"><i class="fas fa-folder-open"></i> 选择文件</label>
+                        <span class="file-name" id="memoryFileName" style="flex:1;">未选择文件</span>
                         <button class="cfg-btn cfg-btn-save" onclick="uploadMemory()"><i class="fas fa-upload"></i> 上传</button>
                     </div>
                     <div id="memoryResult" style="margin-top:12px;"></div>
@@ -289,7 +295,7 @@
                 <!-- ========== 系统设置 ========== -->
                 <div class="cfg-section" id="section-sys">
                     <h2><i class="fas fa-sliders-h"></i> 系统设置</h2>
-                    <div class="form-g" style="max-width:720px;">
+                    <div class="form-g" style="max-width:610px;">
                         <label>系统名称</label>
                         <input type="text" id="sysName" style="width:100%;">
                     </div>
@@ -300,18 +306,20 @@
                     </p>
                     <div style="margin-bottom:12px;">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                            <input type="checkbox" id="apiAuthEnabled" onchange="document.getElementById('apiTokenRow').style.display=this.checked?'flex':'none'"> 启用 API 认证
+                            <input type="checkbox" id="apiAuthEnabled" onchange="document.getElementById('apiTokenRow').style.display=this.checked?'block':'none'"> 启用 API 认证
                         </label>
                     </div>
-                    <div id="apiTokenRow" style="display:flex;gap:8px;align-items:center;max-width:720px;">
-                        <div class="form-g" style="flex:1;margin-bottom:0;position:relative;min-width:0;">
-                            <label>Token</label>
+                    <div id="apiTokenRow" style="max-width:610px;">
+                        <div class="form-g" style="margin-bottom:0;position:relative;">
+                            <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                                <span>Token</span>
+                                <button type="button" class="cfg-btn cfg-btn-reset" onclick="generateAPIToken()" style="padding:6px 14px;font-size:0.8rem;white-space:nowrap;">
+                                    <i class="fas fa-sync-alt"></i> 随机生成
+                                </button>
+                            </label>
                             <input type="password" id="apiAuthToken" placeholder="设置认证 token" style="width:100%;font-family:monospace;padding-right:36px;">
                             <i class="fas fa-eye" onclick="toggleTokenVisibility()" style="position:absolute;right:10px;bottom:12px;cursor:pointer;color:#999;font-size:0.9rem;" title="显示/隐藏"></i>
                         </div>
-                        <button type="button" class="cfg-btn cfg-btn-reset" onclick="generateAPIToken()" style="margin-top:20px;white-space:nowrap;">
-                            <i class="fas fa-sync-alt"></i> 随机生成
-                        </button>
                     </div>
                     <button class="cfg-btn cfg-btn-save" onclick="saveSysConfig()" style="margin-top:16px;">
                         <i class="fas fa-check"></i> 保存
@@ -628,14 +636,67 @@ async function loadPreview() {
         return;
     }
     wrap.style.display = 'block';
-    container.innerHTML = previews.map((p, idx) => `
-        <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px 14px;background:#fff;cursor:pointer;display:flex;align-items:center;gap:8px;" onclick="openPromptPreview(${idx})" onmouseover="this.style.borderColor='#4b6cb7'" onmouseout="this.style.borderColor='#e0e0e0'">
-            <i class="fas fa-file-code" style="color:#4b6cb7;"></i>
-            <span style="font-family:monospace;font-size:0.85rem;">${escHtml(p.file)}</span>
-        </div>
-    `).join('');
+    // 按路径构建目录树：{ dirs: {名: 子树}, files: [{name, idx}] }
+    const root = { dirs: {}, files: [] };
+    previews.forEach((p, idx) => {
+        const parts = p.file.split('/');
+        let node = root;
+        parts.forEach((part, i) => {
+            if (i === parts.length - 1) {
+                node.files.push({ name: part, idx });
+            } else {
+                if (!node.dirs[part]) node.dirs[part] = { dirs: {}, files: [] };
+                node = node.dirs[part];
+            }
+        });
+    });
+    container.innerHTML =
+        '<div class="file-tree-root"><i class="fas fa-folder-open"></i> prompts/</div>' +
+        renderFileTree(root, '');
     // 缓存预览数据供弹窗使用
     window._promptPreviews = previews;
+}
+
+// 递归渲染文件树（目录在前、文件在后，各自按名称排序）
+function renderFileTree(node, path) {
+    let html = '';
+    const dirNames = Object.keys(node.dirs).sort();
+    dirNames.forEach((dirName) => {
+        const fullPath = path + dirName + '/';
+        const uid = 'dir-' + fullPath.replace(/[^a-zA-Z0-9]/g, '_');
+        html +=
+            '<div class="file-tree-dir">' +
+                '<div class="file-tree-row file-tree-dir-row" onclick="toggleFileDir(\'' + uid + '\')" title="' + escHtml(dirName) + '/">' +
+                    '<i class="fas fa-chevron-right file-tree-chevron" id="' + uid + '-chevron"></i>' +
+                    '<i class="fas fa-folder file-tree-dir-icon"></i>' +
+                    '<span class="file-tree-name">' + escHtml(dirName) + '</span>' +
+                '</div>' +
+                '<div class="file-tree-children" id="' + uid + '" style="display:none;">' +
+                    renderFileTree(node.dirs[dirName], fullPath) +
+                '</div>' +
+            '</div>';
+    });
+    const files = node.files.slice().sort((a, b) => a.name.localeCompare(b.name));
+    files.forEach((f) => {
+        html +=
+            '<div class="file-tree-row file-tree-file-row" onclick="openPromptPreview(' + f.idx + ')" title="' + escHtml(path + f.name) + '">' +
+                '<i class="fas fa-file-code file-tree-file-icon"></i>' +
+                '<span class="file-tree-name">' + escHtml(f.name) + '</span>' +
+            '</div>';
+    });
+    return html;
+}
+
+// 折叠 / 展开目录
+function toggleFileDir(uid) {
+    const el = document.getElementById(uid);
+    const chevron = document.getElementById(uid + '-chevron');
+    if (!el) return;
+    const collapsed = el.style.display === 'none';
+    el.style.display = collapsed ? 'block' : 'none';
+    if (chevron) {
+        chevron.className = 'fas ' + (collapsed ? 'fa-chevron-down' : 'fa-chevron-right') + ' file-tree-chevron';
+    }
 }
 
 // 打开提示词模板预览弹窗
@@ -846,9 +907,21 @@ document.getElementById('memoryModal').addEventListener('click', function(e) { i
 // Init
 initNav();
 loadSysConfig();
+bindFileLabel('tarFileInput', 'tarFileName');
+bindFileLabel('csvFileInput', 'csvFileName');
+bindFileLabel('memoryFileInput', 'memoryFileName');
 
 // ==== Utilities ====
 function escHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// 文件选择后，在自定义按钮旁显示所选文件名
+function bindFileLabel(inputId, nameId) {
+    const input = document.getElementById(inputId);
+    const nameEl = document.getElementById(nameId);
+    if (!input || !nameEl) return;
+    input.addEventListener('change', () => {
+        nameEl.textContent = input.files && input.files[0] ? input.files[0].name : '未选择文件';
+    });
+}
 function fmtTs(s) { if (!s) return '-'; /* 数据库 created_at / finished_at 为 ISO，格式化为秒 */ try { const d = new Date(s); if (isNaN(d.getTime())) return s; const p = (n) => String(n).padStart(2,'0'); return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); } catch { return s; } }
 /** 时间线用：保留毫秒。已格式化的时间直接返回，否则从 ISO 转换 */
 function fmtTimelineTs(s) { if (!s) return ''; if (/^\d{2}:\d{2}:\d{2}/.test(s)) return s; /* 旧 HH:MM:ss.SSS */ if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) return s; /* 已是 YYYY-MM-DD HH:MM:ss(.SSS) */ try { const d = new Date(s); if (isNaN(d.getTime())) return s; const p = (n) => String(n).padStart(2,'0'); return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + String(d.getMilliseconds()).padStart(3,'0'); } catch { return s; } }
@@ -1101,7 +1174,7 @@ async function loadSysConfig() {
             const tokenInput = document.getElementById('apiAuthToken');
             tokenInput.value = '';
             tokenInput.placeholder = hasToken ? '已配置（留空保持不变）' : '设置认证 token';
-            document.getElementById('apiTokenRow').style.display = apiEnabled ? 'flex' : 'none';
+            document.getElementById('apiTokenRow').style.display = apiEnabled ? 'block' : 'none';
         }
     } catch (_) {}
 }
@@ -1459,7 +1532,7 @@ async function openChat(sessionId, linkid) {
 }
 
 async function newChat() {
-    const msg = prompt('请输入第一条消息：', '你好，请帮我分析公司现有业务知识。');
+    const msg = prompt('请输入第一条消息：', '你好，请帮我分析现有业务背景知识。');
     if (!msg || !msg.trim()) return;
 
     _chatSessionId = '';

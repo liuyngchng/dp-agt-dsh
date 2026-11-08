@@ -10,7 +10,7 @@ import (
 
 // MemoryItem 记忆库文件条目
 type MemoryItem struct {
-	Filename    string `json:"filename"`    // 文件名，如 公司领导班子成员工作分工.md
+	Filename    string `json:"filename"`    // 文件名，如 xxx.md
 	Title       string `json:"title"`       // 从文件第一行 # 提取
 	Description string `json:"description"` // 标题后第一个非空段落，作为一句话说明
 	Size        int64  `json:"size"`        // 文件字节数
