@@ -317,6 +317,13 @@ func main() {
 			http.NotFound(w, r)
 		}
 	})
+	adminMux.HandleFunc("/admin/data-tables/task_logs/latest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			ah.HandleDataTableLatest(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 	adminMux.HandleFunc("/admin/data-tables/task_logs/sdk-trace", func(w http.ResponseWriter, r *http.Request) {
 		ah.HandleDataTableSdkTrace(w, r)
 	})

@@ -398,6 +398,14 @@ func (s *Store) ListTasksPaged(taskID, linkID string, offset, limit int) ([]Task
 	return tasks, total, err
 }
 
+// ListLatestTasks 返回最新 N 条任务（SDK Trace tab 默认列表用）。
+func (s *Store) ListLatestTasks(limit int) ([]TaskLog, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	return s.queryTasks("ORDER BY created_at DESC LIMIT ?", limit)
+}
+
 func (s *Store) queryTasks(where string, args ...interface{}) ([]TaskLog, error) {
 	rows, err := s.db.Query(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),

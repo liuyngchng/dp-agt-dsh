@@ -1084,6 +1084,45 @@ func (h *AdminHandler) HandleDataTableQuery(w http.ResponseWriter, r *http.Reque
 	}))
 }
 
+// HandleDataTableLatest 返回最新 N 条任务（SDK Trace tab 默认列表用）。
+func (h *AdminHandler) HandleDataTableLatest(w http.ResponseWriter, r *http.Request) {
+	limit := atoiDefault(r.URL.Query().Get("limit"), 5)
+	if limit > 50 {
+		limit = 50
+	}
+	tasks, err := h.store.ListLatestTasks(limit)
+	if err != nil {
+		writeJSON(w, 500, resp(5000, err.Error(), "", "", nil))
+		return
+	}
+	type item struct {
+		TaskID     string `json:"task_id"`
+		LinkID     string `json:"linkid"`
+		SessionID  string `json:"session_id"`
+		Title      string `json:"title"`
+		Path       string `json:"path"`
+		Status     string `json:"status"`
+		CreatedAt  string `json:"created_at"`
+		FinishedAt string `json:"finished_at"`
+	}
+	items := make([]item, 0, len(tasks))
+	for _, t := range tasks {
+		items = append(items, item{
+			TaskID:     t.TaskID,
+			LinkID:     t.LinkID,
+			SessionID:  t.SessionID,
+			Title:      extractTitle(t.RequestBody),
+			Path:       t.Path,
+			Status:     string(t.Status),
+			CreatedAt:  t.CreatedAt,
+			FinishedAt: t.FinishedAt,
+		})
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+		"total": len(items), "items": items,
+	}))
+}
+
 // HandleDataTableSdkTrace 导出单条任务的 sdk_trace 为 <taskid>.json。
 // 路由为 /admin/data-tables/task_logs/sdk-trace?task_id=xxx（精确匹配，避免子树 308 重定向）。
 func (h *AdminHandler) HandleDataTableSdkTrace(w http.ResponseWriter, r *http.Request) {
@@ -1102,11 +1141,40 @@ func (h *AdminHandler) HandleDataTableSdkTrace(w http.ResponseWriter, r *http.Re
 		writeJSON(w, 404, resp(1001, "该任务无 sdk_trace 数据", "", task.LinkID, nil))
 		return
 	}
+
+	// 过滤 SDK 内部记账事件（system/message），与前端展示/导出保持一致。
+	exportTrace := filterTraceEvents(sdkTrace)
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+taskID+`.json"`)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(sdkTrace)))
-	_, _ = w.Write([]byte(sdkTrace))
-	slog.Info("data_task_sdk_trace_exported", "task_id", taskID, "linkid", task.LinkID, "trace_len", len(sdkTrace))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(exportTrace)))
+	_, _ = w.Write([]byte(exportTrace))
+	slog.Info("data_task_sdk_trace_exported", "task_id", taskID, "linkid", task.LinkID, "trace_len", len(exportTrace))
+}
+
+// filterTraceEvents 过滤 sdk_trace 中无业务价值的 SDK 内部事件（system/message）。
+// 与 Claude SDK 的 system 类型消息对应，DSH SDK 的等价事件类型为 system/message。
+// 非 JSON 或非数组时原样返回。
+func filterTraceEvents(raw string) string {
+	var arr []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		return raw
+	}
+	filtered := make([]map[string]interface{}, 0, len(arr))
+	for _, m := range arr {
+		if getStr(m, "type") == "system/message" {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	if len(filtered) == len(arr) {
+		return raw
+	}
+	out, err := json.Marshal(filtered)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // HandleDataTableClear 清空整张表（sessions / task_logs / sdk_traces）。
