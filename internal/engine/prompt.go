@@ -210,26 +210,8 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 		return ""
 	})
 
-	// {{key}} (通用)
-	reKey := regexp.MustCompile(`\{\{([\w.]+)\}\}`)
-	template = reKey.ReplaceAllStringFunc(template, func(match string) string {
-		key := reKey.FindStringSubmatch(match)[1]
-		if strings.HasPrefix(key, "section:") || strings.HasPrefix(key, "request.") {
-			return match
-		}
-		if val, ok := cfgVals[key]; ok {
-			return val
-		}
-		return match
-	})
-
-	// 把模板里残留的环境变量引用转为实际值（用于提示词中的 $FILE_URL_TOKEN 等）
-	for k, v := range cfgVals {
-		if strings.HasPrefix(k, "doc.") && strings.Contains(template, "$"+strings.ToUpper(strings.ReplaceAll(k, ".", "_"))) {
-			// 已通过 {{key}} 替换
-		}
-		_ = v
-	}
+	// 注：{{key}} 形式的明文占位符已废弃。所有配置值一律通过 DP_* 环境变量注入，
+	// 模板中直接写 $DP_XXX 由 Agent 在 shell 中按需读取，不再渲染明文进提示词。
 
 	// 注入业务知识记忆库索引
 	if dataDir == "" {

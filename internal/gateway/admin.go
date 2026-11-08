@@ -1401,7 +1401,7 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 校验占位符（仅提示，不阻断上传）
+	// 校验模板中引用的系统变量是否已配置（仅提示，不阻断上传）
 	var warnings []string
 	rePH := regexp.MustCompile(`\{\{([^}]+)\}\}`)
 	for name, content := range files {
@@ -1411,7 +1411,7 @@ func (h *AdminHandler) HandlePromptTarUpload(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			if !validKeys[inner] {
-				warnings = append(warnings, name+": 占位符 {{"+inner+"}} 未在 CSV 中配置")
+				warnings = append(warnings, name+": 系统变量 {{"+inner+"}} 未在系统变量配置中配置")
 			}
 		}
 	}
