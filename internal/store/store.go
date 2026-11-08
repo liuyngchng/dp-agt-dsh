@@ -83,12 +83,16 @@ func (s *Store) migrate() error {
 			request_response TEXT,
 			prompt           TEXT,
 			sdk_output       TEXT,
-			sdk_trace        TEXT,
 			error_message    TEXT,
 			created_at       TEXT,
 			finished_at      TEXT,
 			created_ts       INTEGER,
 			finished_ts      INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS sdk_traces (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id   TEXT NOT NULL UNIQUE,
+			sdk_trace TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			session_id  TEXT PRIMARY KEY,
@@ -124,6 +128,19 @@ func (s *Store) migrate() error {
 
 	// 兼容旧库：补列
 	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN user_version INTEGER DEFAULT 1`)
+
+	// 迁移：把旧 task_logs.sdk_trace 搬到独立 sdk_traces 表。
+	// 老库的 task_logs 仍带 sdk_trace 列（CREATE TABLE IF NOT EXISTS 不会改动既有表），
+	// 迁移完成后 DROP COLUMN 掉，避免列表查询拖大。
+	if s.columnExists("task_logs", "sdk_trace") {
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO sdk_traces (task_id, sdk_trace)
+			SELECT task_id, sdk_trace FROM task_logs
+			WHERE sdk_trace IS NOT NULL AND sdk_trace != ''`)
+		_, _ = s.db.Exec(`ALTER TABLE task_logs DROP COLUMN sdk_trace`)
+	}
+	if s.columnExists("task_logs", "sdk_stream") {
+		_, _ = s.db.Exec(`ALTER TABLE task_logs DROP COLUMN sdk_stream`)
+	}
 
 	// 种子 admin
 	var count int
@@ -227,7 +244,6 @@ type TaskLog struct {
 	RequestResponse string     `json:"request_response"`
 	Prompt          string     `json:"prompt"`
 	SdkOutput       string     `json:"sdk_output"`
-	SdkTrace        string     `json:"sdk_trace"`
 	ErrorMessage    string     `json:"error_message"`
 	CreatedAt       string     `json:"created_at"`
 	FinishedAt      string     `json:"finished_at"`
@@ -238,12 +254,12 @@ type TaskLog struct {
 func (s *Store) CreateTaskLog(t *TaskLog) error {
 	_, err := s.db.Exec(
 		`INSERT INTO task_logs (task_id, linkid, session_id, path, interface_id, status,
-		 request_body, request_response, prompt, sdk_output, sdk_trace,
+		 request_body, request_response, prompt, sdk_output,
 		 error_message,
 		 created_at, finished_at, created_ts, finished_ts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.TaskID, t.LinkID, t.SessionID, t.Path, t.InterfaceID, t.Status,
-		t.RequestBody, t.RequestResponse, t.Prompt, t.SdkOutput, t.SdkTrace,
+		t.RequestBody, t.RequestResponse, t.Prompt, t.SdkOutput,
 		t.ErrorMessage,
 		t.CreatedAt, t.FinishedAt, t.CreatedTs, t.FinishedTs,
 	)
@@ -254,12 +270,12 @@ func (s *Store) GetTaskLog(taskID string) (*TaskLog, error) {
 	row := s.db.QueryRow(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE task_id = ?`, taskID)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
-		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
+		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 		&t.ErrorMessage,
 		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -297,12 +313,12 @@ func (s *Store) getTaskByWhere(where string, args ...interface{}) (*TaskLog, err
 	row := s.db.QueryRow(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE `+where, args...)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
-		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
+		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 		&t.ErrorMessage,
 		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -371,7 +387,7 @@ func (s *Store) ListTasksPaged(taskID, linkID string, offset, limit int) ([]Task
 	countQ := "SELECT COUNT(*) FROM task_logs " + where
 	s.db.QueryRow(countQ, args...).Scan(&total)
 
-	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	dataArgs := append(append([]interface{}{}, args...), limit, offset)
 	rows, err := s.db.Query(dataQ, dataArgs...)
 	if err != nil {
@@ -386,7 +402,7 @@ func (s *Store) queryTasks(where string, args ...interface{}) ([]TaskLog, error)
 	rows, err := s.db.Query(`SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''),
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
-		COALESCE(sdk_output,''), COALESCE(sdk_trace,''), COALESCE(error_message,''),
+		COALESCE(sdk_output,''), COALESCE(error_message,''),
 		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs `+where, args...)
 	if err != nil {
@@ -401,7 +417,7 @@ func scanTasks(rows *sql.Rows) ([]TaskLog, error) {
 	for rows.Next() {
 		var t TaskLog
 		if err := rows.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
-			&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput, &t.SdkTrace,
+			&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 			&t.ErrorMessage,
 			&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs); err != nil {
 			return nil, err
@@ -409,6 +425,110 @@ func scanTasks(rows *sql.Rows) ([]TaskLog, error) {
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// ── SdkTrace（独立表，避免大字段拖慢 task_logs 列表查询） ──
+
+type SdkTrace struct {
+	ID       int    `json:"id"`
+	TaskID   string `json:"task_id"`
+	SdkTrace string `json:"sdk_trace"`
+}
+
+// UpsertSdkTrace 写入或覆盖某任务的 sdk_trace。
+func (s *Store) UpsertSdkTrace(taskID, sdkTrace string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO sdk_traces (task_id, sdk_trace) VALUES (?, ?)
+		 ON CONFLICT(task_id) DO UPDATE SET sdk_trace = excluded.sdk_trace`,
+		taskID, sdkTrace,
+	)
+	return err
+}
+
+// GetSdkTrace 返回某任务的 sdk_trace（无则空字符串）。
+func (s *Store) GetSdkTrace(taskID string) string {
+	var v string
+	if err := s.db.QueryRow("SELECT sdk_trace FROM sdk_traces WHERE task_id = ?", taskID).Scan(&v); err != nil {
+		return ""
+	}
+	return v
+}
+
+// ListSdkTracesBySession 返回某 session 名下所有任务的 sdk_trace（按 task 创建时间升序）。
+// 会话历史快照需要把同一 session 被 resume 复用后拆到多条 task 的 trace 合并。
+func (s *Store) ListSdkTracesBySession(sessionID string) ([]SdkTrace, error) {
+	rows, err := s.db.Query(
+		`SELECT st.id, st.task_id, st.sdk_trace
+		 FROM sdk_traces st
+		 JOIN task_logs t ON t.task_id = st.task_id
+		 WHERE t.session_id = ?
+		 ORDER BY t.created_ts ASC`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SdkTrace
+	for rows.Next() {
+		var st SdkTrace
+		if err := rows.Scan(&st.ID, &st.TaskID, &st.SdkTrace); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// DeleteSdkTracesByTaskIDs 删除一批任务的 sdk_trace（清理过期任务用）。
+func (s *Store) DeleteSdkTracesByTaskIDs(taskIDs []string) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+	args := make([]interface{}, len(taskIDs))
+	for i, id := range taskIDs {
+		args[i] = id
+	}
+	_, err := s.db.Exec("DELETE FROM sdk_traces WHERE task_id IN ("+placeholders+")", args...)
+	return err
+}
+
+// ClearSdkTraces 清空 sdk_traces 表（数据管理用）。
+func (s *Store) ClearSdkTraces() error {
+	_, err := s.db.Exec("DELETE FROM sdk_traces")
+	return err
+}
+
+// CountSdkTraces 返回 sdk_traces 表行数（数据管理用）。
+func (s *Store) CountSdkTraces() int {
+	var c int
+	s.db.QueryRow("SELECT COUNT(*) FROM sdk_traces").Scan(&c)
+	return c
+}
+
+// CountSessions 返回 sessions 表行数（数据管理用）。
+func (s *Store) CountSessions() int {
+	var c int
+	s.db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&c)
+	return c
+}
+
+// ClearSessions 清空 sessions 表（数据管理用）。
+func (s *Store) ClearSessions() error {
+	_, err := s.db.Exec("DELETE FROM sessions")
+	return err
+}
+
+// CountTasks 返回 task_logs 表行数（数据管理用）。
+func (s *Store) CountTasks() int {
+	var c int
+	s.db.QueryRow("SELECT COUNT(*) FROM task_logs").Scan(&c)
+	return c
+}
+
+// ClearTasks 清空 task_logs 表（数据管理用）。
+func (s *Store) ClearTasks() error {
+	_, err := s.db.Exec("DELETE FROM task_logs")
+	return err
 }
 
 // ── Session ──
@@ -900,12 +1020,26 @@ func (s *Store) IncrementUserVersion(username string) {
 func (s *Store) CleanupExpired(retentionDays int) (deletedTasks int, expiredSessions []Session) {
 	cutoffMs := time.Now().UnixMilli() - int64(retentionDays*24*3600*1000)
 
+	// 先取出过期任务 id，删除 task_logs 后一并清理其 sdk_trace。
+	rows0, err := s.db.Query("SELECT task_id FROM task_logs WHERE created_ts < ? AND status NOT IN ('pending', 'processing')", cutoffMs)
+	var expiredTaskIDs []string
+	if err == nil {
+		for rows0.Next() {
+			var id string
+			if rows0.Scan(&id) == nil {
+				expiredTaskIDs = append(expiredTaskIDs, id)
+			}
+		}
+		rows0.Close()
+	}
+
 	// 过期任务
 	result, err := s.db.Exec("DELETE FROM task_logs WHERE created_ts < ? AND status NOT IN ('pending', 'processing')", cutoffMs)
 	if err == nil {
 		n, _ := result.RowsAffected()
 		deletedTasks = int(n)
 	}
+	_ = s.DeleteSdkTracesByTaskIDs(expiredTaskIDs)
 
 	// 读过期 session（删除前先读出来方便外部清理磁盘）
 	rows, err := s.db.Query(`SELECT session_id, linkid, status,
@@ -945,6 +1079,26 @@ func (s *Store) ActiveSessionIDs() map[string]bool {
 }
 
 // ── 辅助 ──
+
+// columnExists 判断某表是否还存在指定列（迁移时探测旧 schema 用）。
+func (s *Store) columnExists(table, column string) bool {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull int
+		var dflt interface{}
+		var pk int
+		if rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk) == nil && name == column {
+			return true
+		}
+	}
+	return false
+}
 
 func timeFmt(ms int64) string {
 	return time.UnixMilli(ms).Format("2006-01-02 15:04:05.000")

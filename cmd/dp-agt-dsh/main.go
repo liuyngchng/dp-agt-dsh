@@ -298,6 +298,46 @@ func main() {
 		}
 	})
 
+	// 数据管理（仅管理员）
+	adminMux.HandleFunc("/admin/data-tables", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			ah.HandleDataTables(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	// 数据管理路由：精确路径优先，/admin/data-tables/ 子树兜底。
+	// 注意：Go 1.22+ ServeMux 会把带 / 后缀的子树模式对不带 / 的请求做 308 重定向；
+	// 为避免 DELETE /admin/data-tables/task_logs 被重定向到 HTML 404，所有具体路径
+	// 都用不带尾部斜杠的精确匹配注册，不依赖子树模式的路由重定向。
+	adminMux.HandleFunc("/admin/data-tables/task_logs/query", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			ah.HandleDataTableQuery(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	adminMux.HandleFunc("/admin/data-tables/task_logs/sdk-trace", func(w http.ResponseWriter, r *http.Request) {
+		ah.HandleDataTableSdkTrace(w, r)
+	})
+	adminMux.HandleFunc("/admin/data-tables/vacuum", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			ah.HandleDataTableVacuum(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	adminMux.HandleFunc("/admin/data-tables/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "DELETE":
+			ah.HandleDataTableClear(w, r)
+		case "GET":
+			ah.HandleDataTables(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// Prompt Tar
 	adminMux.HandleFunc("/admin/prompt-tar/download", ah.HandlePromptTarDownload)
 	adminMux.HandleFunc("/admin/prompt-tar/upload", func(w http.ResponseWriter, r *http.Request) {

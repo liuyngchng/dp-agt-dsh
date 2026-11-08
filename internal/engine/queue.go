@@ -237,10 +237,10 @@ func (q *Queue) processItem(item *QueueItem) {
 			"status":      string(store.StatusCompleted),
 			"session_id":  sessionID,
 			"sdk_output":  `{"note": "mock mode - dsh not invoked"}`,
-			"sdk_trace":   "[]",
 			"finished_at": store.TimeNowFmt(),
 			"finished_ts": store.TimeNowMs(),
 		})
+		_ = q.store.UpsertSdkTrace(taskID, "[]")
 		return
 	}
 
@@ -300,7 +300,7 @@ func (q *Queue) processItem(item *QueueItem) {
 				})
 				if time.Since(lastPersist) >= time.Second {
 					if trace, err := json.Marshal(allEvents); err == nil {
-						_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"sdk_trace": string(trace)})
+						_ = q.store.UpsertSdkTrace(taskID, string(trace))
 					}
 					lastPersist = time.Now()
 				}
@@ -311,11 +311,11 @@ func (q *Queue) processItem(item *QueueItem) {
 	// 检查任务是否在运行期间被管理员取消（状态已被置为 cancelled）
 	if current, _ := q.store.GetTaskLog(taskID); current != nil && current.Status == store.StatusCancelled {
 		trace, _ := json.Marshal(allEvents)
+		_ = q.store.UpsertSdkTrace(taskID, string(trace))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":        string(store.StatusCancelled),
 			"session_id":    sessionID,
 			"sdk_output":    "",
-			"sdk_trace":     string(trace),
 			"error_message": "任务已被管理员停止",
 			"finished_at":   store.TimeNowFmt(),
 			"finished_ts":   store.TimeNowMs(),
@@ -327,11 +327,11 @@ func (q *Queue) processItem(item *QueueItem) {
 
 	if err != nil {
 		trace, _ := json.Marshal(allEvents)
+		_ = q.store.UpsertSdkTrace(taskID, string(trace))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 			"status":        string(store.StatusFailed),
 			"session_id":    sessionID,
 			"sdk_output":    "",
-			"sdk_trace":     string(trace),
 			"error_message": err.Error(),
 			"finished_at":   store.TimeNowFmt(),
 			"finished_ts":   store.TimeNowMs(),
@@ -344,10 +344,10 @@ func (q *Queue) processItem(item *QueueItem) {
 	// 成功
 	_ = q.store.UpsertSession(sessionID, linkID)
 	trace, _ := json.Marshal(result.Events)
+	_ = q.store.UpsertSdkTrace(taskID, string(trace))
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
 		"session_id":  sessionID,
 		"sdk_output":  result.FinalResponse,
-		"sdk_trace":   string(trace),
 		"status":      string(store.StatusCompleted),
 		"finished_at": store.TimeNowFmt(),
 		"finished_ts": store.TimeNowMs(),

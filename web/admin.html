@@ -129,7 +129,7 @@
 
             <!-- ========== 记忆管理 ========== -->
             <div class="cfg-section" id="section-memory">
-                <h2><i class="fas fa-database"></i> 记忆管理</h2>
+                <h2><i class="fas fa-memory"></i> 记忆管理</h2>
                 <p>上传业务背景知识作为 Agent 的按需记忆。索引表会注入每个任务的提示词，量大将拖长上下文，请保持精简。单文件 ≤ 100KB，最多 20 个文件，总量 ≤ 2MB。文件存入 <code>data/memory/</code>，下一个新任务生效。支持 <code>.md</code> 单文件、<code>.xmind</code> 脑图（自动转 Markdown）。</p>
 
                 <!-- 横向子 tab -->
@@ -319,38 +319,92 @@
                     </div>
                 </div>
 
-                <!-- ========== 系统设置 ========== -->
+                <!-- ========== 系统管理 ========== -->
                 <div class="cfg-section" id="section-sys">
-                    <h2><i class="fas fa-sliders-h"></i> 系统设置</h2>
-                    <div class="form-g" style="max-width:610px;">
-                        <label>系统名称</label>
-                        <input type="text" id="sysName" style="width:100%;">
+                    <h2><i class="fas fa-sliders-h"></i> 系统管理</h2>
+
+                    <!-- 横向子 tab -->
+                    <div class="sub-tabs" style="display:flex;gap:8px;margin:20px 0 24px;border-bottom:2px solid #eef1f6;">
+                        <button type="button" class="sub-tab active" data-subtab="settings" onclick="switchSysTab('settings')"><i class="fas fa-cog"></i> 系统设置</button>
+                        <button type="button" class="sub-tab" data-subtab="trace" onclick="switchSysTab('trace')"><i class="fas fa-terminal"></i> SDK Trace</button>
+                        <button type="button" class="sub-tab" data-subtab="data" onclick="switchSysTab('data')"><i class="fas fa-database"></i> 数据管理</button>
                     </div>
 
-                    <h3 style="margin-top:24px;border-top:1px solid #e0e3e8;padding-top:20px;">对外 API 认证</h3>
-                    <p style="color:#888;margin-bottom:12px;font-size:0.85rem;">
-                        启用后调用 <code>POST /api/v1/{path}</code> 必须携带 <code>X-Api-Key: &lt;token&gt;</code> 头。
-                    </p>
-                    <div style="margin-bottom:12px;">
-                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                            <input type="checkbox" id="apiAuthEnabled" onchange="document.getElementById('apiTokenRow').style.display=this.checked?'block':'none'"> 启用 API 认证
-                        </label>
-                    </div>
-                    <div id="apiTokenRow" style="max-width:610px;">
-                        <div class="form-g" style="margin-bottom:0;position:relative;">
-                            <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                                <span>Token</span>
-                                <button type="button" class="cfg-btn cfg-btn-reset" onclick="generateAPIToken()" style="padding:6px 14px;font-size:0.8rem;white-space:nowrap;">
-                                    <i class="fas fa-sync-alt"></i> 随机生成
-                                </button>
+                    <!-- Tab 1：系统设置 -->
+                    <div class="sub-panel active" id="sub-sys-settings">
+                        <div class="form-g" style="max-width:610px;">
+                            <label>系统名称</label>
+                            <input type="text" id="sysName" style="width:100%;">
+                        </div>
+
+                        <h3 style="margin-top:24px;border-top:1px solid #e0e3e8;padding-top:20px;">对外 API 认证</h3>
+                        <p style="color:#888;margin-bottom:12px;font-size:0.85rem;">
+                            启用后调用 <code>POST /api/v1/{path}</code> 必须携带 <code>X-Api-Key: &lt;token&gt;</code> 头。
+                        </p>
+                        <div style="margin-bottom:12px;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="apiAuthEnabled" onchange="document.getElementById('apiTokenRow').style.display=this.checked?'block':'none'"> 启用 API 认证
                             </label>
-                            <input type="password" id="apiAuthToken" placeholder="设置认证 token" style="width:100%;font-family:monospace;padding-right:36px;">
-                            <i class="fas fa-eye" onclick="toggleTokenVisibility()" style="position:absolute;right:10px;bottom:12px;cursor:pointer;color:#999;font-size:0.9rem;" title="显示/隐藏"></i>
+                        </div>
+                        <div id="apiTokenRow" style="max-width:610px;">
+                            <div class="form-g" style="margin-bottom:0;position:relative;">
+                                <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                                    <span>Token</span>
+                                    <button type="button" class="cfg-btn cfg-btn-reset" onclick="generateAPIToken()" style="padding:6px 14px;font-size:0.8rem;white-space:nowrap;">
+                                        <i class="fas fa-sync-alt"></i> 随机生成
+                                    </button>
+                                </label>
+                                <input type="password" id="apiAuthToken" placeholder="设置认证 token" style="width:100%;font-family:monospace;padding-right:36px;">
+                                <i class="fas fa-eye" onclick="toggleTokenVisibility()" style="position:absolute;right:10px;bottom:12px;cursor:pointer;color:#999;font-size:0.9rem;" title="显示/隐藏"></i>
+                            </div>
+                        </div>
+                        <button class="cfg-btn cfg-btn-save" onclick="saveSysConfig()" style="margin-top:16px;">
+                            <i class="fas fa-check"></i> 保存
+                        </button>
+                    </div>
+
+                    <!-- Tab 2：SDK Trace 查看 -->
+                    <div class="sub-panel" id="sub-sys-trace">
+                        <p style="color:#888;font-size:0.85rem;margin:0 0 20px;">
+                            按 <code>task_id</code> 精确查询，查看 <code>sdk_trace</code> 原始消息流，可选择导出为 <code>&lt;taskid&gt;.json</code>。
+                        </p>
+
+                        <div style="background:#f8f9fb;border:1px solid #e0e3e8;border-radius:8px;padding:16px 18px;margin-bottom:20px;">
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+                                <div class="form-g" style="margin:0;flex:1;min-width:320px;"><label>Task ID</label><input type="text" id="traceQueryTaskId" placeholder="输入 Task ID（精确匹配）" style="width:100%;"></div>
+                                <button class="cfg-btn cfg-btn-save" onclick="queryTraceTab()"><i class="fas fa-search"></i> 查询</button>
+                            </div>
+                            <div id="traceQueryResult" style="margin-top:16px;"></div>
                         </div>
                     </div>
-                    <button class="cfg-btn cfg-btn-save" onclick="saveSysConfig()" style="margin-top:16px;">
-                        <i class="fas fa-check"></i> 保存
-                    </button>
+
+                    <!-- Tab 3：数据管理 -->
+                    <div class="sub-panel" id="sub-sys-data">
+                        <p style="color:#888;font-size:0.85rem;margin:0 0 20px;">
+                            管理数据库中的运行数据。<strong>清空操作不可逆</strong>，建议先导出备份。
+                        </p>
+
+                        <div id="dataTableSelector" style="margin-bottom:24px;"></div>
+                        <div id="dataTableActions" style="display:none;"></div>
+
+                        <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e0e3e8;">
+                            <button class="cfg-btn cfg-btn-warn" onclick="vacuumDatabase()"><i class="fas fa-compress-alt"></i> 压缩数据库</button>
+                            <span style="font-size:0.82rem;color:#888;margin-left:12px;">清空表后数据库文件不会自动变小，压缩（VACUUM）可回收磁盘空间，耗时视库大小而定。</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据管理：sdk_trace 查看 / 导出弹窗 -->
+                <div id="traceModal" class="modal-overlay">
+                    <div class="modal-lg" style="width:min(1280px, calc(100vw - 40px));height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+                        <h3 style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                            <span id="traceModalTitle"><i class="fas fa-terminal"></i> sdk_trace</span>
+                            <button type="button" class="cfg-btn cfg-btn-sm" id="traceExportBtn" onclick="exportTrace()" style="margin-left:auto;"><i class="fas fa-download"></i> 导出 JSON</button>
+                            <button type="button" class="cfg-btn-sm" onclick="closeTraceModal()"><i class="fas fa-times"></i> 关闭</button>
+                        </h3>
+                        <div id="traceMeta" style="flex-shrink:0;margin-top:12px;font-size:0.82rem;color:#666;background:#f8f9fb;border:1px solid #e0e3e8;border-radius:8px;padding:10px 14px;"></div>
+                        <pre id="traceContent" class="stream-terminal term-box" style="margin-top:12px;flex:1;min-height:0;"></pre>
+                    </div>
                 </div>
 
                 <!-- ========== 用户管理 ========== -->
@@ -462,7 +516,7 @@ async function initNav() {
                 else if (tab.dataset.tab === 'memory') { switchMemoryTab('list'); }
                 else if (tab.dataset.tab === 'simulate') loadSimulateTab();
                 else if (tab.dataset.tab === 'tasks') loadTasks();
-                else if (tab.dataset.tab === 'sys') loadSysConfig();
+                else if (tab.dataset.tab === 'sys') { switchSysTab('settings'); loadDataTables(); }
                 else if (tab.dataset.tab === 'users') loadUsers();
                 else if (tab.dataset.tab === 'audit') loadAudit(0);
                 else if (tab.dataset.tab === 'sessions') loadSessions();
@@ -1024,6 +1078,20 @@ bindFileLabel('memoryFileInput', 'memoryFileName');
 
 // ==== Utilities ====
 function escHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmtSize(bytes) {
+    if (!bytes && bytes !== 0) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+function fmtDuration(ms) {
+    if (!ms || ms <= 0) return '0s';
+    if (ms < 1000) return ms + 'ms';
+    if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+    const m = Math.floor(ms / 60000);
+    const s = ((ms % 60000) / 1000).toFixed(1);
+    return m + 'm ' + s + 's';
+}
 // 文件选择后，在自定义按钮旁显示所选文件名
 function bindFileLabel(inputId, nameId) {
     const input = document.getElementById(inputId);
@@ -1052,6 +1120,7 @@ function statusText(s) {
 document.getElementById('taskModal').addEventListener('click', function(e) { if (e.target === this) closeTaskModal(); });
 document.getElementById('streamModal').addEventListener('click', function(e) { if (e.target === this) closeStreamModal(); });
 document.getElementById('cfgModal').addEventListener('click', function(e) { if (e.target === this) closeCfgModal(); });
+document.getElementById('traceModal').addEventListener('click', function(e) { if (e.target === this) closeTraceModal(); });
 
 // Close modal on ESC
 document.addEventListener('keydown', function(e) {
@@ -1063,6 +1132,7 @@ document.addEventListener('keydown', function(e) {
         if (document.getElementById('memoryModal').classList.contains('show')) closeMemoryModal();
         if (document.getElementById('promptPreviewModal').classList.contains('show')) closePromptPreview();
         if (document.getElementById('cfgModal').classList.contains('show')) closeCfgModal();
+        if (document.getElementById('traceModal').classList.contains('show')) closeTraceModal();
     }
 });
 
@@ -1330,6 +1400,243 @@ async function saveSysConfig() {
         if (json.code === 0) toast('保存成功', 'success');
         else toast(json.message || '保存失败', 'error');
     } catch (err) { toast('保存失败: ' + err.message, 'error'); }
+}
+
+// ==== 数据管理 ====
+
+function switchSysTab(name) {
+    document.querySelectorAll('#section-sys .sub-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.subtab === name);
+    });
+    document.querySelectorAll('#section-sys .sub-panel').forEach(p => {
+        p.classList.toggle('active', p.id === 'sub-sys-' + name);
+    });
+    if (name === 'settings') {
+        loadSysConfig();
+    } else if (name === 'trace') {
+        // 切到 SDK Trace 时清空旧结果
+        document.getElementById('traceQueryResult').innerHTML = '';
+    } else if (name === 'data') {
+        loadDataTables();
+    }
+}
+
+let _dataTableMeta = [];
+let _traceTask = null;      // 当前查看 sdk_trace 的任务
+let _traceRaw = '';         // 原始 sdk_trace 字符串（导出用）
+
+async function loadDataTables() {
+    try {
+        const res = await fetch(API + '/data-tables');
+        const json = await res.json();
+        _dataTableMeta = (json.data && json.data.tables) || [];
+
+        let html = '';
+        for (const t of _dataTableMeta) {
+            html += '<div class="data-table-row" style="display:flex;align-items:center;gap:16px;padding:14px 18px;border:1px solid #e0e3e8;border-radius:8px;margin-bottom:12px;cursor:pointer;transition:all 0.15s;"'
+                + ' onclick="selectDataTable(\'' + escJs(t.id) + '\')"'
+                + ' id="dtRow_' + escJs(t.id) + '">'
+                + '<div style="flex:1;"><div style="font-weight:600;color:#333;">' + escHtml(t.label) + '</div>'
+                + '<div style="font-size:0.82rem;color:#888;margin-top:4px;">' + escHtml(t.note) + '</div></div>'
+                + '<div style="font-size:0.85rem;color:#888;white-space:nowrap;"><span style="font-weight:700;color:#4b6cb7;font-size:1.2rem;">' + t.count.toLocaleString() + '</span> 条记录</div>'
+                + '</div>';
+        }
+
+        if (_dataTableMeta.length === 0) {
+            html = '<div style="color:#999;padding:24px;text-align:center;">暂无数据表</div>';
+        }
+        document.getElementById('dataTableSelector').innerHTML = html;
+        document.getElementById('dataTableActions').style.display = 'none';
+    } catch (err) {
+        document.getElementById('dataTableSelector').innerHTML = '<div style="color:#e53e3e;">加载失败: ' + escHtml(err.message) + '</div>';
+    }
+}
+
+function selectDataTable(tableId) {
+    document.querySelectorAll('[id^="dtRow_"]').forEach(el => el.style.borderColor = '#e0e3e8');
+    const el = document.getElementById('dtRow_' + tableId);
+    if (el) el.style.borderColor = '#4b6cb7';
+
+    const t = _dataTableMeta.find(t => t.id === tableId);
+    if (!t) return;
+
+    const actions = document.getElementById('dataTableActions');
+    actions.style.display = 'block';
+    actions.innerHTML =
+        '<div style="background:#f8f9fb;border:1px solid #e0e3e8;border-radius:8px;padding:16px 18px;">'
+        + '<div style="font-weight:600;color:#333;margin-bottom:12px;"><i class="fas fa-cog"></i> ' + escHtml(t.label) + ' — 操作</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'
+        + '<button class="cfg-btn cfg-btn-danger-sm" style="padding:11px 28px;font-size:0.95rem;font-weight:600;border-radius:8px;" onclick="clearDataTable(\'' + escJs(tableId) + '\', \'' + escJs(t.label) + '\', ' + t.count + ')"><i class="fas fa-trash-alt"></i> 清空全表</button>'
+        + '</div></div>';
+}
+
+// ==== SDK Trace 查询 ====
+
+async function queryTraceTab() {
+    const taskId = document.getElementById('traceQueryTaskId').value.trim();
+    if (!taskId) {
+        toast('请输入 Task ID', 'error');
+        return;
+    }
+    const params = new URLSearchParams();
+    params.set('task_id', taskId);
+
+    try {
+        const res = await fetch(API + '/data-tables/task_logs/query?' + params.toString());
+        const json = await res.json();
+        const items = (json.data && json.data.items) || [];
+        const total = (json.data && json.data.total) || 0;
+        const box = document.getElementById('traceQueryResult');
+
+        if (items.length === 0) {
+            box.innerHTML = '<div style="color:#999;padding:12px 0;">未查询到任务记录</div>';
+            return;
+        }
+
+        let html = '<div style="font-size:0.82rem;color:#888;margin-bottom:8px;">共 ' + total + ' 条</div>';
+        html += '<div class="table-scroll"><table class="result-table"><thead><tr>'
+            + '<th class="col-seq">序号</th><th>标题</th><th>访问路径</th><th>状态</th><th class="col-date">创建时间</th><th class="col-action">操作</th>'
+            + '</tr></thead><tbody>';
+        items.forEach((t, idx) => {
+            html += '<tr>'
+                + '<td class="col-seq">' + (idx + 1) + '</td>'
+                + '<td class="col-title" title="' + escHtml(t.title || '-') + '">' + escHtml(t.title || '-') + '</td>'
+                + '<td>' + escHtml(t.path || '-') + '</td>'
+                + '<td>' + escHtml(statusText(t.status)) + '</td>'
+                + '<td>' + escHtml(fmtTs(t.created_at)) + '</td>'
+                + '<td class="col-action"><button class="cfg-btn-sm cfg-btn-icon cfg-btn-icon-primary" onclick="viewTrace(\'' + escJs(t.task_id) + '\')" title="查看 sdk_trace"><i class="fas fa-terminal"></i></button></td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        box.innerHTML = html;
+    } catch (err) {
+        document.getElementById('traceQueryResult').innerHTML = '<div style="color:#e53e3e;padding:12px 0;">查询失败: ' + escHtml(err.message) + '</div>';
+    }
+}
+
+async function viewTrace(taskId) {
+    try {
+        const res = await fetch(API + '/audit/' + encodeURIComponent(taskId));
+        const json = await res.json();
+        const t = json.data;
+        if (!t) { toast('任务不存在', 'error'); return; }
+
+        _traceTask = t;
+        _traceRaw = t.sdk_trace || '';
+
+        // 从 DSH SDK 事件流中提取统计信息：
+        // - assistant/message.data.usage → 每轮 token
+        // - turn/start → 轮次计数
+        // - 首/末 event.time → 总耗时
+        let msgCount = 0;
+        let totalTokens = null;
+        let numTurns = null;
+        let totalDurationMs = null;
+        if (_traceRaw) {
+            try {
+                const parsed = JSON.parse(_traceRaw);
+                if (Array.isArray(parsed)) {
+                    msgCount = parsed.length;
+                    let tokens = 0;
+                    let turns = 0;
+                    let firstTime = null;
+                    let lastTime = null;
+                    for (const ev of parsed) {
+                        if (!firstTime && ev.time) firstTime = ev.time;
+                        if (ev.time) lastTime = ev.time;
+                        if (ev.type === 'assistant/message' && ev.data && ev.data.usage) {
+                            tokens += (ev.data.usage.totalTokens || 0);
+                        }
+                        if (ev.type === 'turn/start') turns++;
+                    }
+                    if (tokens > 0) totalTokens = tokens;
+                    if (turns > 0) numTurns = turns;
+                    if (firstTime && lastTime) totalDurationMs = lastTime - firstTime;
+                }
+            } catch { /* 解析失败按 0 处理 */ }
+        }
+
+        // 第一行：身份 + 体积 + 消息总数
+        let line1 = '<strong>Task ID:</strong> <code>' + escHtml(t.task_id) + '</code>'
+            + ' &nbsp;|&nbsp; <strong>Link ID:</strong> <code>' + escHtml(t.linkid || '-') + '</code>'
+            + ' &nbsp;|&nbsp; <strong>大小:</strong> ' + fmtSize(_traceRaw ? new Blob([_traceRaw]).size : 0)
+            + ' &nbsp;|&nbsp; <strong>消息总数:</strong> ' + msgCount;
+
+        // 第二行：执行指标（DSH SDK 事件无 API 耗时字段，仅展示轮次/总tokens/总耗时）
+        let line2 = '<strong>轮次:</strong> ' + (numTurns !== null ? numTurns : '-');
+        line2 += ' &nbsp;|&nbsp; <strong>总 tokens:</strong> ' + (totalTokens !== null ? totalTokens.toLocaleString() : '-');
+        line2 += ' &nbsp;|&nbsp; <strong>总耗时:</strong> ' + (totalDurationMs !== null ? fmtDuration(totalDurationMs) : '-');
+
+        document.getElementById('traceModalTitle').innerHTML = '<i class="fas fa-terminal"></i> sdk_trace';
+        document.getElementById('traceMeta').innerHTML =
+            '<div>' + line1 + '</div>'
+            + '<div style="margin-top:6px;">' + line2 + '</div>';
+
+        const pre = document.getElementById('traceContent');
+        if (!_traceRaw) {
+            pre.textContent = '(该任务无 sdk_trace 数据)';
+        } else {
+            try {
+                pre.textContent = JSON.stringify(JSON.parse(_traceRaw), null, 2);
+            } catch {
+                pre.textContent = _traceRaw;
+            }
+        }
+        document.getElementById('traceExportBtn').style.display = _traceRaw ? 'inline-flex' : 'none';
+        document.getElementById('traceModal').classList.add('show');
+    } catch (err) {
+        toast('查看失败: ' + err.message, 'error');
+    }
+}
+
+function exportTrace() {
+    if (!_traceTask || !_traceRaw) { toast('无数据', 'error'); return; }
+    const blob = new Blob([_traceRaw], { type: 'application/json;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = _traceTask.task_id + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('已导出 ' + _traceTask.task_id + '.json', 'success');
+}
+
+function closeTraceModal() {
+    document.getElementById('traceModal').classList.remove('show');
+}
+
+async function clearDataTable(tableId, label, count) {
+    if (!confirm('确定要清空 ' + label + ' 的全部 ' + count.toLocaleString() + ' 条记录？\n\n此操作不可逆！建议先导出备份。')) return;
+    try {
+        const res = await fetch(API + '/data-tables/' + encodeURIComponent(tableId), { method: 'DELETE' });
+        const json = await res.json();
+        if (json.code === 0) {
+            toast(json.message || '已清空', 'success');
+            loadDataTables();
+        } else {
+            toast(json.message || '清空失败', 'error');
+        }
+    } catch (err) {
+        toast('清空失败: ' + err.message, 'error');
+    }
+}
+
+async function vacuumDatabase() {
+    if (!confirm('确定要压缩数据库吗？\n\n压缩会短暂锁库，且需要额外临时磁盘空间。建议在低峰期操作。')) return;
+    const btn = event && event.currentTarget;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 压缩中...'; }
+    try {
+        const res = await fetch(API + '/data-tables/vacuum', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) {
+            toast(json.message || '压缩完成', 'success');
+        } else {
+            toast(json.message || '压缩失败', 'error');
+        }
+    } catch (err) {
+        toast('压缩失败: ' + err.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-compress-alt"></i> 压缩数据库'; }
+    }
 }
 
 // ==== 用户管理 ====
@@ -2132,38 +2439,54 @@ function tryExtractCallbackFromTrace(sdkTrace, fallbackTime) {
     try { messages = JSON.parse(sdkTrace); } catch { return null; }
     if (!Array.isArray(messages) || messages.length === 0) return null;
 
-    const callbackIds = new Set();
+    // Step 1: Find actual callback Bash commands (those using /tmp/callback_payload)
+    // and extract the request body from the heredoc.
+    // Key insight: the prompt tells the agent to use "/tmp/callback_payload" —
+    // this is the reliable marker.  Do NOT match every command that mentions
+    // "callback" (e.g. "getent hosts callback.test.me" is a DNS probe, not a callback).
+    const callbackMap = new Map();
     for (const msg of messages) {
         if (msg.type !== 'assistant') continue;
         for (const block of (msg.message?.content || [])) {
             if (block.type !== 'tool_use' || block.name !== 'Bash') continue;
             const cmd = typeof block.input?.command === 'string' ? block.input.command : '';
-            if (cmd.includes('/tmp/callback_payload') || cmd.includes('callback')) {
-                if (block.id) callbackIds.add(block.id);
-            }
+            if (!cmd.includes('/tmp/callback_payload')) continue;
+            if (!block.id) continue;
+            callbackMap.set(block.id, { payload: extractCallbackPayload(cmd), response: '' });
         }
     }
-    if (callbackIds.size === 0) return null;
+    if (callbackMap.size === 0) return null;
 
-    const results = [];
+    // Step 2: Collect the tool_result (response) for each callback command
     for (const msg of messages) {
         if (msg.type !== 'user') continue;
         for (const block of (msg.message?.content || [])) {
             if (block.type !== 'tool_result') continue;
-            if (block.tool_use_id && !callbackIds.has(block.tool_use_id)) continue;
+            if (!block.tool_use_id || !callbackMap.has(block.tool_use_id)) continue;
             const raw = block.content;
-            if (typeof raw === 'string') {
-                results.push({ toolId: block.tool_use_id || '', content: raw });
-            } else if (Array.isArray(raw)) {
-                results.push({ toolId: block.tool_use_id || '', content: raw.map(c => (typeof c.text === 'string' ? c.text : JSON.stringify(c))).join('') });
-            }
+            const text = typeof raw === 'string'
+                ? raw
+                : Array.isArray(raw)
+                    ? raw.map(c => (typeof c.text === 'string' ? c.text : JSON.stringify(c))).join('')
+                    : '';
+            callbackMap.get(block.tool_use_id).response = text.trim();
         }
     }
-    if (results.length === 0) return null;
 
-    const allOk = results.every(r => !r.content.includes('curl: (') && !r.content.includes('command failed') && !r.content.includes('Error'));
-    let detail = results.map(r => r.content.trim()).join('\n\n---\n\n');
-    if (results.length > 1) detail = results.map((r, i) => '[' + (i + 1) + ']\n' + r.content.trim()).join('\n\n');
+    const entries = Array.from(callbackMap.entries());
+    const allOk = entries.every(([, e]) => {
+        const resp = e.response;
+        return !resp.includes('curl: (') && !resp.includes('command failed') && !resp.includes('Error');
+    });
+
+    // Build detail: for each callback, show the request body first, then the response
+    const parts = entries.map(([, e], i) => {
+        const prefix = entries.length > 1 ? '[回调 ' + (i + 1) + ']\n' : '';
+        const payloadBlock = e.payload ? '请求体:\n' + e.payload : '(无法提取请求体)';
+        const responseBlock = '响应:\n' + (e.response || '(无响应)');
+        return prefix + payloadBlock + '\n\n' + responseBlock;
+    });
+    const detail = parts.join('\n\n---\n\n');
 
     return {
         time: fallbackTime,
@@ -2171,6 +2494,14 @@ function tryExtractCallbackFromTrace(sdkTrace, fallbackTime) {
         title: allOk ? '回调成功' : '回调失败',
         detail: detail
     };
+}
+
+function extractCallbackPayload(cmd) {
+    // Match: cat > /tmp/callback_payload.json << 'PAYLOAD_EOF'  (or "PAYLOAD_EOF" or PAYLOAD_EOF)
+    //        <content>
+    //        PAYLOAD_EOF
+    const m = cmd.match(/<<\s*['"]?PAYLOAD_EOF['"]?\s*\n([\s\S]*?)\nPAYLOAD_EOF/);
+    return (m && m[1]) ? m[1].trim() : '';
 }
 
 function exportAuditMd() {

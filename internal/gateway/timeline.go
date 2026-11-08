@@ -37,7 +37,9 @@ func buildOutputOnlyEvents(task *store.TaskLog) []timelineEvent {
 	}}
 }
 
-// tryExtractCallbackFromTrace 从 SDK trace 中提取回调 curl 记录
+// tryExtractCallbackFromTrace 从 SDK trace 中提取回调 curl 记录。
+// 只匹配使用 /tmp/callback_payload 的命令（不包含任意含 "callback" 的命令，
+// 避免误匹配 getent hosts 等 DNS 探测），并从 heredoc 提取请求体。
 func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 	if sdkTrace == "" {
 		return nil
@@ -50,7 +52,12 @@ func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 		return nil
 	}
 
-	callbackIds := make(map[string]bool)
+	type cbEntry struct {
+		payload  string
+		response string
+	}
+	callbackMap := make(map[string]*cbEntry)
+
 	for _, msg := range messages {
 		if getStr(msg, "type") != "assistant" {
 			continue
@@ -64,18 +71,23 @@ func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 			}
 			input, _ := block["input"].(map[string]interface{})
 			cmd := getStr(input, "command")
-			if strings.Contains(cmd, "/tmp/callback_payload") || strings.Contains(cmd, "callback") {
-				if id := getStr(block, "id"); id != "" {
-					callbackIds[id] = true
-				}
+			if !strings.Contains(cmd, "/tmp/callback_payload") {
+				continue
+			}
+			id := getStr(block, "id")
+			if id == "" {
+				continue
+			}
+			callbackMap[id] = &cbEntry{
+				payload:  extractCallbackPayload(cmd),
+				response: "",
 			}
 		}
 	}
-	if len(callbackIds) == 0 {
+	if len(callbackMap) == 0 {
 		return nil
 	}
 
-	var results []string
 	for _, msg := range messages {
 		if getStr(msg, "type") != "user" {
 			continue
@@ -88,12 +100,16 @@ func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 				continue
 			}
 			toolID := getStr(block, "tool_use_id")
-			if toolID == "" || !callbackIds[toolID] {
+			if toolID == "" {
+				continue
+			}
+			entry, ok := callbackMap[toolID]
+			if !ok {
 				continue
 			}
 			switch raw := block["content"].(type) {
 			case string:
-				results = append(results, raw)
+				entry.response = strings.TrimSpace(raw)
 			case []interface{}:
 				var sb strings.Builder
 				for _, c := range raw {
@@ -101,32 +117,40 @@ func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 						sb.WriteString(getStr(cm, "text"))
 					}
 				}
-				results = append(results, sb.String())
+				entry.response = strings.TrimSpace(sb.String())
 			}
 		}
 	}
-	if len(results) == 0 {
-		return nil
-	}
 
+	var parts []string
 	allOk := true
-	for _, r := range results {
-		if strings.Contains(r, "curl: (") || strings.Contains(r, "command failed") || strings.Contains(r, "Error") {
+	i := 0
+	for _, entry := range callbackMap {
+		resp := entry.response
+		if strings.Contains(resp, "curl: (") || strings.Contains(resp, "command failed") || strings.Contains(resp, "Error") {
 			allOk = false
-			break
 		}
-	}
 
-	var detail string
-	if len(results) > 1 {
-		var parts []string
-		for i, r := range results {
-			parts = append(parts, fmt.Sprintf("[%d]\n%s", i+1, strings.TrimSpace(r)))
+		var sb strings.Builder
+		if len(callbackMap) > 1 {
+			fmt.Fprintf(&sb, "[回调 %d]\n", i+1)
 		}
-		detail = strings.Join(parts, "\n\n")
-	} else {
-		detail = strings.TrimSpace(results[0])
+		if entry.payload != "" {
+			sb.WriteString("请求体:\n")
+			sb.WriteString(entry.payload)
+		} else {
+			sb.WriteString("(无法提取请求体)")
+		}
+		sb.WriteString("\n\n响应:\n")
+		if entry.response == "" {
+			sb.WriteString("(无响应)")
+		} else {
+			sb.WriteString(entry.response)
+		}
+		parts = append(parts, sb.String())
+		i++
 	}
+	detail := strings.Join(parts, "\n\n---\n\n")
 
 	title := "回调失败"
 	typ := "error"
@@ -135,6 +159,29 @@ func tryExtractCallbackFromTrace(sdkTrace, fallbackTime string) *timelineEvent {
 		typ = "done"
 	}
 	return &timelineEvent{Time: fallbackTime, Type: typ, Title: title, Detail: detail}
+}
+
+// extractCallbackPayload 从 Bash heredoc 提取写入 /tmp/callback_payload.json 的 JSON 体。
+func extractCallbackPayload(cmd string) string {
+	re := strings.Index(cmd, "<<")
+	if re < 0 {
+		return ""
+	}
+	head := cmd[re:]
+	idx := strings.Index(head, "PAYLOAD_EOF")
+	if idx < 0 {
+		return ""
+	}
+	start := strings.IndexByte(head[idx:], '\n')
+	if start < 0 {
+		return ""
+	}
+	start += idx + 1
+	end := strings.Index(head[start:], "PAYLOAD_EOF")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(head[start : start+end])
 }
 
 // renderHistoryHTML 渲染按 linkid 聚合的会话处理时间线 HTML（折叠式，每任务一个 details/summary）

@@ -64,7 +64,7 @@ func (h *AdminHandler) HandleNav(w http.ResponseWriter, r *http.Request) {
 	if isAdmin {
 		tabs = append(tabs,
 			tab{"interfaces", "fa-brain", "模板管理"},
-			tab{"memory", "fa-database", "记忆管理"},
+			tab{"memory", "fa-memory", "记忆管理"},
 			tab{"simulate", "fa-flask", "操作模拟"},
 			tab{"tasks", "fa-list-alt", "任务监控"},
 		)
@@ -251,7 +251,7 @@ func (h *AdminHandler) HandleAdminTaskDetail(w http.ResponseWriter, r *http.Requ
 		"request_response": mustParseJSON(task.RequestResponse),
 		"prompt":           task.Prompt,
 		"sdk_output":       task.SdkOutput,
-		"sdk_trace":        task.SdkTrace,
+		"sdk_trace":        h.store.GetSdkTrace(task.TaskID),
 		"error_message":    task.ErrorMessage,
 		"created_at":       task.CreatedAt,
 		"finished_at":      task.FinishedAt,
@@ -360,29 +360,30 @@ func (h *AdminHandler) getSessionSnapshot(sessionID string) map[string]interface
 // loadSessionEvents 从 DB 反序列化 session 对应的全部 sdk_trace。
 //
 // DSH SDK 没有类似 Claude Agent SDK 的 getSessionMessages() 可以从磁盘会话文件
-// 直接读全量历史；每条消息只能从 task_logs.sdk_trace 拿到，且 sdk_trace 只在任务
+// 直接读全量历史；每条消息只能从 sdk_traces 表拿到，且 sdk_trace 只在任务
 // 结束时才落库。同一 session 被 resume 复用后，历史被拆到多条 task 的 sdk_trace 里，
 // 单取最新一条会导致「重新打开只看到实时推送、看不到历史」。因此这里合并该 session
 // 名下所有 task 的 sdk_trace，按 task 创建时间升序拼接，并按消息 id 去重（resume
 // 重放可能带来重复的 user/assistant 消息）。
 func (h *AdminHandler) loadSessionEvents(sessionID string) []map[string]interface{} {
-	tasks, err := h.store.ListTasksBySessionID(sessionID)
-	if err != nil || len(tasks) == 0 {
-		// 兜底：老数据可能 session_id 未回填，退回按 task_id / 最新 task 查
+	traces, err := h.store.ListSdkTracesBySession(sessionID)
+	if err != nil || len(traces) == 0 {
+		// 兜底：老数据可能 session_id 未回填，退回按 task_id 单查
 		taskID := strings.TrimPrefix(sessionID, "s-")
-		task, _ := h.store.GetTaskLog(taskID)
-		if task == nil {
-			task, _ = h.store.GetTaskBySessionID(sessionID)
-		}
-		if task == nil {
+		if task, _ := h.store.GetTaskLog(taskID); task == nil {
 			return nil
 		}
-		tasks = []store.TaskLog{*task}
+		if s := h.store.GetSdkTrace(taskID); s != "" {
+			traces = []store.SdkTrace{{TaskID: taskID, SdkTrace: s}}
+		}
+		if len(traces) == 0 {
+			return nil
+		}
 	}
 
 	var events []map[string]interface{}
 	seen := make(map[string]bool)
-	for _, t := range tasks {
+	for _, t := range traces {
 		if t.SdkTrace == "" {
 			continue
 		}
@@ -659,7 +660,7 @@ func (h *AdminHandler) HandleAuditDetail(w http.ResponseWriter, r *http.Request)
 		"request_response": mustParseJSON(task.RequestResponse),
 		"prompt":           task.Prompt,
 		"sdk_output":       task.SdkOutput,
-		"sdk_trace":        task.SdkTrace,
+		"sdk_trace":        h.store.GetSdkTrace(task.TaskID),
 	}))
 }
 
@@ -1005,6 +1006,221 @@ func (h *AdminHandler) HandlePromptConfigItemDelete(w http.ResponseWriter, r *ht
 	}
 	slog.Info("prompt config item deleted", "key", key)
 	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
+}
+
+// ── 数据管理（仅管理员） ──
+
+// HandleDataTables 返回可管理的数据表清单与行数。
+func (h *AdminHandler) HandleDataTables(w http.ResponseWriter, r *http.Request) {
+	tables := []map[string]interface{}{
+		{
+			"id": "sessions", "label": "会话表（sessions）",
+			"note": "会话与 linkid 的映射，删除后同一 linkid 再提交会新建会话",
+			"count": h.store.CountSessions(),
+		},
+		{
+			"id": "task_logs", "label": "任务日志表（task_logs）",
+			"note": "任务执行记录、时间线等审计数据（不含 sdk_trace）",
+			"count": h.store.CountTasks(),
+		},
+		{
+			"id": "sdk_traces", "label": "SDK Trace 表（sdk_traces）",
+			"note": "Agent SDK 全量消息流 JSON，体积大，独立存储",
+			"count": h.store.CountSdkTraces(),
+		},
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"tables": tables}))
+}
+
+// HandleDataTableQuery 按 task_id 或 linkid 精确查询任务（轻量列，不含大字段）。
+func (h *AdminHandler) HandleDataTableQuery(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	linkID := strings.TrimSpace(r.URL.Query().Get("linkid"))
+	if taskID == "" && linkID == "" {
+		writeJSON(w, 400, resp(1001, "必须指定 task_id 或 linkid", "", "", nil))
+		return
+	}
+
+	var tasks []store.TaskLog
+	if taskID != "" {
+		task, _ := h.store.GetTaskLog(taskID)
+		if task != nil {
+			tasks = []store.TaskLog{*task}
+		}
+	} else {
+		tasks, _ = h.store.ListTasksByLinkid(linkID, 50)
+	}
+
+	if len(tasks) == 0 {
+		writeJSON(w, 404, resp(1001, "未找到匹配的任务", "", linkID, nil))
+		return
+	}
+
+	type item struct {
+		TaskID     string `json:"task_id"`
+		LinkID     string `json:"linkid"`
+		SessionID  string `json:"session_id"`
+		Title      string `json:"title"`
+		Path       string `json:"path"`
+		Status     string `json:"status"`
+		CreatedAt  string `json:"created_at"`
+		FinishedAt string `json:"finished_at"`
+	}
+	items := make([]item, 0, len(tasks))
+	for _, t := range tasks {
+		items = append(items, item{
+			TaskID:     t.TaskID,
+			LinkID:     t.LinkID,
+			SessionID:  t.SessionID,
+			Title:      extractTitle(t.RequestBody),
+			Path:       t.Path,
+			Status:     string(t.Status),
+			CreatedAt:  t.CreatedAt,
+			FinishedAt: t.FinishedAt,
+		})
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+		"total": len(items), "items": items,
+	}))
+}
+
+// HandleDataTableSdkTrace 导出单条任务的 sdk_trace 为 <taskid>.json。
+// 路由为 /admin/data-tables/task_logs/sdk-trace?task_id=xxx（精确匹配，避免子树 308 重定向）。
+func (h *AdminHandler) HandleDataTableSdkTrace(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	if taskID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 task_id", "", "", nil))
+		return
+	}
+	task, _ := h.store.GetTaskLog(taskID)
+	if task == nil {
+		writeJSON(w, 404, resp(1001, "任务不存在", "", "", nil))
+		return
+	}
+	sdkTrace := h.store.GetSdkTrace(taskID)
+	if sdkTrace == "" {
+		writeJSON(w, 404, resp(1001, "该任务无 sdk_trace 数据", "", task.LinkID, nil))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+taskID+`.json"`)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(sdkTrace)))
+	_, _ = w.Write([]byte(sdkTrace))
+	slog.Info("data_task_sdk_trace_exported", "task_id", taskID, "linkid", task.LinkID, "trace_len", len(sdkTrace))
+}
+
+// HandleDataTableClear 清空整张表（sessions / task_logs / sdk_traces）。
+func (h *AdminHandler) HandleDataTableClear(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/admin/data-tables/")
+	id = strings.Trim(id, "/")
+	if id != "sessions" && id != "task_logs" && id != "sdk_traces" {
+		writeJSON(w, 404, resp(1001, "不支持的表", "", "", nil))
+		return
+	}
+
+	countOf := func(tid string) int {
+		switch tid {
+		case "sessions":
+			return h.store.CountSessions()
+		case "task_logs":
+			return h.store.CountTasks()
+		case "sdk_traces":
+			return h.store.CountSdkTraces()
+		}
+		return 0
+	}
+
+	before := countOf(id)
+	if before == 0 {
+		writeJSON(w, 200, resp(0, "表已是空的", "", "", map[string]interface{}{"deleted": 0}))
+		return
+	}
+
+	deleted := 0
+	switch id {
+	case "sessions":
+		sessions, _ := h.store.ListAllSessions()
+		for _, sess := range sessions {
+			workDir := engine.SessionWorkDir(h.cfg.RuntimeTasksDir(), sess.SessionID)
+			if _, err := os.Stat(workDir); err == nil {
+				_ = os.RemoveAll(workDir)
+			}
+		}
+		if err := h.store.ClearSessions(); err == nil {
+			deleted = before
+		}
+	case "task_logs":
+		if err := h.store.ClearTasks(); err == nil {
+			deleted = before
+		}
+	case "sdk_traces":
+		if err := h.store.ClearSdkTraces(); err == nil {
+			deleted = before
+		}
+	}
+
+	slog.Info("data_table_cleared", "table", id, "deleted", deleted)
+	writeJSON(w, 200, resp(0, "已清空", "", "", map[string]interface{}{"deleted": deleted}))
+}
+
+// HandleDataTableVacuum 压缩数据库（VACUUM），回收清空表后未释放的磁盘空间。
+func (h *AdminHandler) HandleDataTableVacuum(w http.ResponseWriter, r *http.Request) {
+	dbPath := filepath.Join(h.cfg.Sys.DataDir, "app.db")
+	beforeSize := int64(0)
+	if st, err := os.Stat(dbPath); err == nil {
+		beforeSize = st.Size()
+	}
+
+	if err := func() error {
+		db := h.store.DB()
+		// VACUUM 要求 journal_mode 非 WAL，先切 DELETE，完成后切回 WAL。
+		if _, err := db.Exec("PRAGMA journal_mode = DELETE"); err != nil {
+			return err
+		}
+		if _, err := db.Exec("VACUUM"); err != nil {
+			return err
+		}
+		_, _ = db.Exec("PRAGMA journal_mode = WAL")
+		return nil
+	}(); err != nil {
+		slog.Error("vacuum_failed", "error", err.Error())
+		writeJSON(w, 500, resp(1001, "压缩失败: "+err.Error(), "", "", nil))
+		return
+	}
+
+	afterSize := int64(0)
+	if st, err := os.Stat(dbPath); err == nil {
+		afterSize = st.Size()
+	}
+	shrunk := beforeSize - afterSize
+	pct := "0"
+	if beforeSize > 0 {
+		pct = fmt.Sprintf("%.1f", float64(shrunk)/float64(beforeSize)*100)
+	}
+	slog.Info("vacuum_ok", "before", beforeSize, "after", afterSize, "shrunk", shrunk, "pct", pct)
+	msg := fmt.Sprintf("压缩完成：%s → %s，回收 %s（%s%%）",
+		fmtSize(beforeSize), fmtSize(afterSize), fmtSize(maxInt64(0, shrunk)), pct)
+	writeJSON(w, 200, resp(0, msg, "", "", map[string]interface{}{
+		"before": beforeSize, "after": afterSize, "shrunk": shrunk,
+	}))
+}
+
+// fmtSize 把字节数格式化为人类可读字符串。
+func fmtSize(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	if bytes < 1048576 {
+		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(bytes)/1048576)
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ── Prompt Tar ──
@@ -1370,7 +1586,7 @@ func (h *AdminHandler) HandleTaskTrace(w http.ResponseWriter, r *http.Request) {
 		"request_body":  mustParseJSON(task.RequestBody),
 		"prompt":        task.Prompt,
 		"sdk_output":    task.SdkOutput,
-		"sdk_trace":     task.SdkTrace,
+		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
 		"finished_at":   task.FinishedAt,
@@ -1396,7 +1612,7 @@ func (h *AdminHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		"request_body":  mustParseJSON(task.RequestBody),
 		"prompt":        task.Prompt,
 		"sdk_output":    task.SdkOutput,
-		"sdk_trace":     task.SdkTrace,
+		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
 		"finished_at":   task.FinishedAt,
