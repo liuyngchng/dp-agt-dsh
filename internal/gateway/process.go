@@ -164,12 +164,27 @@ func (h *TasksHandler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, resp(1001, "任务不存在", "", "", nil))
 		return
 	}
-	if task.Status != store.StatusPending {
-		writeJSON(w, http.StatusBadRequest, resp(1001, "只有 pending 状态的任务可以取消", "", task.LinkID, nil))
+	// 已结束的任务不可取消
+	if task.Status != store.StatusPending && task.Status != store.StatusProcessing {
+		writeJSON(w, http.StatusBadRequest, resp(1001, "任务已结束，无法取消", "", task.LinkID, nil))
 		return
 	}
-	_ = h.store.UpdateTaskResult(taskID, map[string]interface{}{"status": string(store.StatusCancelled)})
-	writeJSON(w, http.StatusOK, resp(0, "任务已取消", taskID, task.LinkID, nil))
+
+	// pending → 从队列移除；processing → 中断 SDK 执行
+	switch h.queue.CancelTask(taskID) {
+	case "processing":
+		writeJSON(w, http.StatusOK, resp(0, "任务停止中", taskID, task.LinkID, nil))
+	case "pending":
+		_ = h.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"error_message": "任务已被管理员取消",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		writeJSON(w, http.StatusOK, resp(0, "任务已取消", taskID, task.LinkID, nil))
+	default:
+		writeJSON(w, http.StatusBadRequest, resp(1001, "未找到可取消的任务", "", task.LinkID, nil))
+	}
 }
 
 func itoa(n int) string {

@@ -747,6 +747,20 @@ input[type="file"]::file-selector-button:hover {
     border-color: #4b6cb7;
 }
 
+/* 红色图标按钮 — 停止/取消任务 */
+.cfg-btn-icon-danger {
+    color: #e53e3e;
+    border-color: #e53e3e;
+}
+.cfg-btn-icon-danger:hover {
+    background: #fff5f5;
+}
+
+/* 统一 checkbox 颜色 */
+input[type="checkbox"] {
+    accent-color: #4b6cb7;
+}
+
 /* 状态徽章 */
 .badge {
     padding: 3px 10px;

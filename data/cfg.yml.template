@@ -51,8 +51,8 @@ llm:
   # 默认模型（dsh 内置 catalog: deepseek-flash / deepseek-v4-pro）
   model: "deepseek-v4-pro"
 
-  # API 超时（毫秒）
-  timeout_ms: 600000
+  # API 超时（毫秒），单任务最长执行时间
+  timeout_ms: 300000
 
   # 关闭非必要遥测（私有部署建议 true）
   disable_nonessential_traffic: true

@@ -338,6 +338,30 @@ func (c *Client) ResumeSession(sessionID string) error {
 	return err
 }
 
+// CancelSession 取消正在执行的 session 工作（session/cancel 通知）。
+// 这是协议中的 notification（无响应），通过 stdio 发送一行 JSON-RPC 通知即可，
+// 不等待响应；Agent 收到后应尽快停止 LLM 请求与工具调用，并回报 cancelled 状态。
+func (c *Client) CancelSession(sessionID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd == nil || c.stdin == nil {
+		return ErrTransportClosed
+	}
+	req := JsonRpcRequest{
+		Jsonrpc: "2.0",
+		Method:  "session/cancel",
+		Params:  SessionCancelParams{SessionID: sessionID},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.stdin, "%s\n", string(data)); err != nil {
+		return fmt.Errorf("%w: %v", ErrTransportClosed, err)
+	}
+	return nil
+}
+
 // SetWorkingDirectory 设置 session 的工作目录
 func (c *Client) SetWorkingDirectory(sessionID, workDir string) error {
 	_, err := c.request("session/working-directory/set", SessionWorkingDirectorySetParams{

@@ -27,6 +27,9 @@ type Queue struct {
 
 	linkMu     sync.Mutex
 	linkChains map[string]chan struct{}
+
+	// 运行中任务的 session 映射：task_id → sessionID，供管理员取消
+	runningSessions sync.Map
 }
 
 type QueueItem struct {
@@ -268,6 +271,10 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	}
 
+	// 注册 task→session 映射，供管理员取消 processing 任务
+	q.runningSessions.Store(taskID, sessionID)
+	defer q.runningSessions.Delete(taskID)
+
 	// 兜底切换 session 的工作目录（session/new 已指定 cwd 时，这里是幂等确认，
 	// 不产生多余的「工作目录变更」消息）。
 	if err := q.ds.SetWorkingDirectory(sessionID, workDir); err != nil {
@@ -300,6 +307,24 @@ func (q *Queue) processItem(item *QueueItem) {
 			}
 		}
 	})
+
+	// 检查任务是否在运行期间被管理员取消（状态已被置为 cancelled）
+	if current, _ := q.store.GetTaskLog(taskID); current != nil && current.Status == store.StatusCancelled {
+		trace, _ := json.Marshal(allEvents)
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"session_id":    sessionID,
+			"sdk_output":    "",
+			"sdk_trace":     string(trace),
+			"error_message": "任务已被管理员停止",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		PublishStream(sessionID, harness.Notification{Method: "end"})
+		slog.Info("task cancelled", "task", taskID, "link", linkID)
+		return
+	}
+
 	if err != nil {
 		trace, _ := json.Marshal(allEvents)
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
@@ -469,4 +494,37 @@ func (q *Queue) GetPendingCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.pending)
+}
+
+// CancelTask 取消一个任务（支持 pending 和 processing）。
+//   - pending：直接从队列移除，返回 "pending"。
+//   - processing：通过 session/cancel 通知中断正在执行的 SDK query，返回 "processing"。
+//   - 找不到可取消的任务时返回空字符串。
+func (q *Queue) CancelTask(taskID string) string {
+	// 1) 处理中的任务：中断 SDK
+	if sessionID, ok := q.runningSessions.Load(taskID); ok {
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"error_message": "任务已被管理员停止",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		if q.ds != nil {
+			if err := q.ds.CancelSession(sessionID.(string)); err != nil {
+				slog.Warn("cancel session failed", "task", taskID, "session", sessionID, "err", err)
+			}
+		}
+		return "processing"
+	}
+
+	// 2) 排队中的任务：从 pending 数组移除
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, it := range q.pending {
+		if it.TaskID == taskID {
+			q.pending = append(q.pending[:i], q.pending[i+1:]...)
+			return "pending"
+		}
+	}
+	return ""
 }

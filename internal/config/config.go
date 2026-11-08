@@ -110,7 +110,7 @@ func Load(dataDir string) (*Config, error) {
 	cfg.LLM.BaseURL = strMap(raw, "llm.base_url", "")
 	cfg.LLM.AuthToken = strMap(raw, "llm.auth_token", "")
 	cfg.LLM.Model = strMap(raw, "llm.model", "deepseek-v4-pro")
-	cfg.LLM.TimeoutMs = intMap(raw, "llm.timeout_ms", 600000)
+	cfg.LLM.TimeoutMs = intMap(raw, "llm.timeout_ms", 300000)
 	cfg.LLM.DisableNonessentialTraffic = boolMap(raw, "llm.disable_nonessential_traffic", true)
 
 	// 环境变量覆盖（dsh 原生使用 DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY）

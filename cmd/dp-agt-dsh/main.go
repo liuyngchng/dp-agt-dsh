@@ -183,9 +183,12 @@ func main() {
 		}
 	})
 	adminMux.HandleFunc("/admin/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
+		switch r.Method {
+		case "GET":
 			ah.HandleAdminTaskDetail(w, r)
-		} else {
+		case "DELETE":
+			ah.HandleAdminTaskCancel(w, r)
+		default:
 			http.NotFound(w, r)
 		}
 	})

@@ -258,6 +258,40 @@ func (h *AdminHandler) HandleAdminTaskDetail(w http.ResponseWriter, r *http.Requ
 	}))
 }
 
+// HandleAdminTaskCancel 取消任务（支持 pending 和 processing）。
+// 与管理后台「任务监控」的停止按钮对应，也供对外 DELETE /api/tasks/:task_id 复用同一逻辑。
+func (h *AdminHandler) HandleAdminTaskCancel(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimPrefix(r.URL.Path, "/admin/tasks/")
+	if taskID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 task_id", "", "", nil))
+		return
+	}
+	task, _ := h.store.GetTaskLog(taskID)
+	if task == nil {
+		writeJSON(w, 404, resp(1001, "任务不存在", "", "", nil))
+		return
+	}
+	if task.Status != store.StatusPending && task.Status != store.StatusProcessing {
+		writeJSON(w, 400, resp(1001, "任务已结束，无法取消", "", task.LinkID, nil))
+		return
+	}
+
+	switch h.queue.CancelTask(taskID) {
+	case "processing":
+		writeJSON(w, 200, resp(0, "任务停止中", taskID, task.LinkID, nil))
+	case "pending":
+		_ = h.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"error_message": "任务已被管理员取消",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		writeJSON(w, 200, resp(0, "任务已取消", taskID, task.LinkID, nil))
+	default:
+		writeJSON(w, 400, resp(1001, "未找到可取消的任务", "", task.LinkID, nil))
+	}
+}
+
 // ── SSE 流 ──
 
 func (h *AdminHandler) HandleSessionStream(w http.ResponseWriter, r *http.Request) {

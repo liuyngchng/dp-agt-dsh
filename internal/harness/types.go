@@ -73,6 +73,12 @@ type SessionPromptResult struct {
 	MessageID string `json:"messageId"`
 }
 
+// ── session/cancel ──
+
+type SessionCancelParams struct {
+	SessionID string `json:"sessionId"`
+}
+
 // ── session/resume ──
 
 type SessionResumeParams struct {
