@@ -293,6 +293,26 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 	}
 }
 
+// NewSession 用指定工作目录显式创建 session，返回真实 session ID。
+// 新任务提交时先调用它，避免 session/prompt 隐式创建时继承 initialize 的兜底 cwd，
+// 再靠 working-directory/set 切换产生一条多余的「工作目录变更」消息。
+func (c *Client) NewSession(workDir string) (string, error) {
+	raw, err := c.request("session/new", SessionNewParams{Cwd: workDir})
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(*raw, &result); err != nil {
+		return "", fmt.Errorf("parse session/new: %w", err)
+	}
+	if result.SessionID == "" {
+		return "", fmt.Errorf("%w: empty sessionId", ErrProtocolViolation)
+	}
+	return result.SessionID, nil
+}
+
 // ResumeSession 恢复持久化的 session
 func (c *Client) ResumeSession(sessionID string) error {
 	_, err := c.request("session/resume", SessionResumeParams{SessionID: sessionID})

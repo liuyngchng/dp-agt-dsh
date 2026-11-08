@@ -79,6 +79,12 @@ type SessionResumeParams struct {
 	SessionID string `json:"sessionId"`
 }
 
+// ── session/new ──
+
+type SessionNewParams struct {
+	Cwd string `json:"cwd"`
+}
+
 // ── session/working-directory/set ──
 
 type SessionWorkingDirectorySetParams struct {

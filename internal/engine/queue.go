@@ -255,9 +255,21 @@ func (q *Queue) processItem(item *QueueItem) {
 			_ = q.store.UpsertSession(sessionID, linkID)
 			_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 		}
+	} else {
+		// 新 session：显式用 session/new + cwd 创建，让工作目录一开始就正确，
+		// 而不是先继承 initialize 兜底目录、再用 working-directory/set 切换。
+		realID, err := q.ds.NewSession(workDir)
+		if err != nil {
+			slog.Warn("session/new failed, falling back to prompt-time create", "session", sessionID, "err", err)
+		} else {
+			sessionID = realID
+			_ = q.store.UpsertSession(sessionID, linkID)
+			_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
+		}
 	}
 
-	// 切换 session 的工作目录到当前任务的 workdir（失败则终止任务，避免在兜底目录下误执行）
+	// 兜底切换 session 的工作目录（session/new 已指定 cwd 时，这里是幂等确认，
+	// 不产生多余的「工作目录变更」消息）。
 	if err := q.ds.SetWorkingDirectory(sessionID, workDir); err != nil {
 		q.failTask(taskID, "设置工作目录失败: "+err.Error())
 		return
