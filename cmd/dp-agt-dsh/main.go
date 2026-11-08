@@ -280,6 +280,20 @@ func main() {
 			http.NotFound(w, r)
 		}
 	})
+	adminMux.HandleFunc("/admin/prompt-config/item", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			ah.HandlePromptConfigItem(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	adminMux.HandleFunc("/admin/prompt-config/item/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			ah.HandlePromptConfigItemDelete(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 
 	// Prompt Tar
 	adminMux.HandleFunc("/admin/prompt-tar/download", ah.HandlePromptTarDownload)

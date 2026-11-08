@@ -906,6 +906,73 @@ func (h *AdminHandler) HandlePromptConfigUpload(w http.ResponseWriter, r *http.R
 	writeJSON(w, 200, resp(0, "导入成功", "", "", map[string]interface{}{"imported": len(rows), "keys": keys}))
 }
 
+// validatePromptConfigKey 校验 prompt_config key 格式，合法返回空字符串，否则返回错误信息。
+// 与 dp-agt 的 validatePromptConfigKey 规则一致。
+func validatePromptConfigKey(key string) string {
+	if key == "" {
+		return "key 不能为空"
+	}
+	if len(key) > 128 {
+		return "key 长度不能超过 128 个字符"
+	}
+	if ok, _ := regexp.MatchString(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`, key); !ok {
+		return "key 只能包含字母、数字、下划线、点号和连字符，且必须以字母或数字开头"
+	}
+	if regexp.MustCompile(`(?i)^dp_`).MatchString(key) {
+		return "key 不能以 DP_ 开头（前缀由系统自动添加）"
+	}
+	if strings.Contains(key, "{{") || strings.Contains(key, "}}") {
+		return "key 不能包含 {{ 或 }} 占位符标记"
+	}
+	return ""
+}
+
+// HandlePromptConfigItem 新增/更新单个配置项（页面直接添加环境变量，无需编辑 CSV）
+func (h *AdminHandler) HandlePromptConfigItem(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+		Note  string `json:"note"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, resp(1001, "请求体解析失败", "", "", nil))
+		return
+	}
+	key := strings.TrimSpace(body.Key)
+	note := strings.TrimSpace(body.Note)
+
+	if msg := validatePromptConfigKey(key); msg != "" {
+		writeJSON(w, 400, resp(1001, msg, "", "", nil))
+		return
+	}
+	if body.Value == "" {
+		writeJSON(w, 400, resp(1001, "value 不能为空", "", "", nil))
+		return
+	}
+
+	if err := h.store.UpsertConfigItem(key, body.Value, note); err != nil {
+		writeJSON(w, 500, resp(5000, "保存失败: "+err.Error(), "", "", nil))
+		return
+	}
+	slog.Info("prompt config item upserted", "key", key)
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"key": key}))
+}
+
+// HandlePromptConfigItemDelete 删除单个配置项
+func (h *AdminHandler) HandlePromptConfigItemDelete(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/admin/prompt-config/item/")
+	if key == "" {
+		writeJSON(w, 400, resp(1001, "缺少 key", "", "", nil))
+		return
+	}
+	if !h.store.DeleteConfigItem(key) {
+		writeJSON(w, 404, resp(1001, "配置项不存在", "", "", nil))
+		return
+	}
+	slog.Info("prompt config item deleted", "key", key)
+	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
+}
+
 // ── Prompt Tar ──
 
 func (h *AdminHandler) HandlePromptTarDownload(w http.ResponseWriter, r *http.Request) {

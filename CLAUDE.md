@@ -44,7 +44,7 @@
 - 无 `npm`/热更新脚本，本地调试直接 `go build` + 运行二进制。
 - 提示词占位符语法：业务模板用 `{{request.xxx}}` 与 `{{task_id}}`；CLAUDE.md 模板（`prompts/claude-md.md`）用 `{{key}}`（来自 CSV 配置），条件段落用 `{{section:片段名:key}}`。
 - `prompts/` 下的 `.md` 在**启动时**和**上传提示词压缩包时**被扫描进内存缓存；直接改文件后需重启服务或通过管理后台重新上传提示词包才会生效（无文件监听热更新）。
-- 任务工作目录按 linkid 创建于 `data/tasks/<linkid>/`；CLAUDE.md 只在目录中不存在时写入（resume 场景不重写），session 复用的任务不会重新读取 CLAUDE.md。
+- 任务工作目录按 sessionID 创建于 `runtime/tasks/<sessionID>/`；CLAUDE.md 只在目录中不存在时写入（resume 场景不重写），session 复用的任务不会重新读取 CLAUDE.md。
 - 所有面向业务的文本（`fail_reason`、`opinion_text`、`result_text` 等）要求简体中文。
 
 ## 配置说明
@@ -52,6 +52,28 @@
 - `data/cfg.yml`：服务端口、并发数、LLM 地址/模型等（模板见 `data/cfg.yml.template`）。
 - `data/cfg.csv`：业务 KV 配置，导入后存 `prompt_config` 表（值 AES-GCM 加密），供 CLAUDE.md 模板 `{{key}}` 渲染（模板见 `data/cfg.csv.template`）。
 - 密钥类值只通过环境变量（如 `DEEPSEEK_API_KEY`、`TLS_CERT_FILE`/`TLS_KEY_FILE`）或加密 `prompt_config` 引用，不写死。
+
+### 环境变量配置（prompt_config）
+
+`prompt_config` 表（CSV 导入或页面逐条添加）除用于 `{{key}}` 渲染外，还会在**启动 DSH 子进程时**注入为 Agent 可读取的环境变量：
+
+- 每条 key 会映射为 `DP_` 前缀的环境变量：点 `.` → 下划线 `_`，全大写。
+  例如 `current_organization_name` → `DP_CURRENT_ORGANIZATION_NAME`。
+- 兼容旧名（与 `prompts/sections/*.md` 中的 `$FILE_URL_TOKEN` 等引用对应）：
+  - `doc.file_url_token` → `FILE_URL_TOKEN`
+  - `doc_audit.token` → `DOC_AUDIT_TOKEN`
+  - `callback.token` → `CALLBACK_TOKEN`
+- 每个新任务的 CLAUDE.md 末尾会生成一张「可用环境变量」清单（只列变量名与说明，不泄露值），Agent 可按需 `echo $DP_XXX` 读取。
+
+页面管理入口：管理后台「模板管理 → 占位符配置」支持：
+- 逐条添加/删除环境变量（key 不能以 `DP_` 开头，前缀由系统自动添加）；
+- 批量上传 CSV（原有方式）。
+
+key 校验规则（`internal/gateway/admin.go` 的 `validatePromptConfigKey`）：
+- 只能含字母、数字、下划线、点号、连字符，且以字母或数字开头，长度 ≤ 128；
+- 不能以 `DP_` 开头，不能含 `{{` / `}}`。
+
+敏感项判定（`internal/store/store.go` 的 `IsSensitiveKey`）：key 以 `.token`/`.key`/`.secret`/`.password` 或对应 `_` 结尾时视为敏感，`value` 在列表接口默认脱敏展示（`maskValue`）。
 
 ## Git 注意
 

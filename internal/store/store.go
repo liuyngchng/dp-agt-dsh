@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -701,6 +702,44 @@ func (s *Store) GetAllConfigPlain() map[string]string {
 		}
 	}
 	return out
+}
+
+// IsSensitiveKey 判断 key 是否为敏感项：以 .token/.key/.secret/.password 或
+// _token/_key/_secret/_password 结尾视为敏感（与 CSV 导入、dp-agt 的判定规则一致）。
+func IsSensitiveKey(key string) bool {
+	for _, suffix := range []string{"token", "secret", "password", "key"} {
+		if strings.HasSuffix(key, "_"+suffix) || strings.HasSuffix(key, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// UpsertConfigItem 单条新增/更新 prompt_config（页面直接添加环境变量用）。
+func (s *Store) UpsertConfigItem(key, value, note string) error {
+	enc, iv, tag := encryptValue(value)
+	isSecret := 0
+	if IsSensitiveKey(key) {
+		isSecret = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO prompt_config (key, value_enc, iv, tag, is_secret, note, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value_enc=excluded.value_enc, iv=excluded.iv,
+		 tag=excluded.tag, is_secret=excluded.is_secret, note=excluded.note, updated_at=excluded.updated_at`,
+		key, enc, iv, tag, isSecret, note, timeFmt(time.Now().UnixMilli()),
+	)
+	return err
+}
+
+// DeleteConfigItem 删除单个 prompt_config 项，返回是否真的删除了一行。
+func (s *Store) DeleteConfigItem(key string) bool {
+	result, err := s.db.Exec("DELETE FROM prompt_config WHERE key = ?", key)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
 }
 
 func (s *Store) ListConfigRows(reveal bool) []ConfigRow {
