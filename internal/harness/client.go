@@ -70,19 +70,24 @@ type Client struct {
 	baseURL  string
 	apiKey   string
 	dsHome   string
+
+	// runtimeDir 是 dsh 子进程的进程级工作目录（initialize.cwd 与 cmd.Dir）。
+	// 它必须存在且可读写，作为 session 创建后再切换到真实会话目录之前的过渡目录。
+	runtimeDir string
 }
 
 // NewClient 创建 dsh harness 客户端（不启动进程）
 func NewClient(cfg config.LLMConfig) *Client {
 	return &Client{
-		cfg:      cfg,
-		pending:  make(map[string]chan *json.RawMessage),
-		subs:     make(map[int64]*notificationSub),
-		model:    cfg.Model,
-		provider: cfg.Provider,
-		baseURL:  cfg.BaseURL,
-		apiKey:   cfg.AuthToken,
-		dsHome:   cfg.DSHome,
+		cfg:        cfg,
+		pending:    make(map[string]chan *json.RawMessage),
+		subs:       make(map[int64]*notificationSub),
+		model:      cfg.Model,
+		provider:   cfg.Provider,
+		baseURL:    cfg.BaseURL,
+		apiKey:     cfg.AuthToken,
+		dsHome:     cfg.DSHome,
+		runtimeDir: cfg.RuntimeDir,
 	}
 }
 
@@ -113,9 +118,17 @@ func (c *Client) Start() error {
 	env = append(env, "DSH_HOME="+c.dsHome)
 	_ = os.MkdirAll(c.dsHome, 0755)
 
+	runtimeDir := c.runtimeDir
+	if runtimeDir == "" {
+		runtimeDir = "/tmp"
+	}
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+		return fmt.Errorf("mkdir runtime dir: %w", err)
+	}
+
 	cmd := exec.Command(bin, "--profile", "sdk")
 	cmd.Env = env
-	cmd.Dir = "/tmp"
+	cmd.Dir = runtimeDir
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -146,7 +159,7 @@ func (c *Client) Start() error {
 
 	// 初始化握手
 	resp, err := c.requestLocked("initialize", InitializeParams{
-		Cwd:      "/tmp",
+		Cwd:      runtimeDir,
 		Provider: c.provider,
 		Model:    c.model,
 	})

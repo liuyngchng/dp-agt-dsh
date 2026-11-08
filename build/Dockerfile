@@ -64,6 +64,10 @@ RUN chmod 644 /app/deploy/certs/cert.pem /app/deploy/certs/key.pem
 # 数据目录（容器挂载卷）
 RUN mkdir -p /app/data/tasks /app/data/logs /app/data/dsh-home
 
+# 会话工作目录（容器内部，不映射到宿主机）。
+# 容器以 --user HOST_UID:GID 运行，目录需对任意 uid 可写。
+RUN mkdir -p /app/runtime/tasks && chmod 0777 /app/runtime /app/runtime/tasks
+
 # 复制配置模板
 COPY data/cfg.yml.template /app/data/cfg.yml.template
 COPY data/cfg.csv.template /app/data/cfg.csv.template

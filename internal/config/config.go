@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,8 +38,9 @@ type LLMConfig struct {
 	DisableNonessentialTraffic bool   `yaml:"disable_nonessential_traffic"`
 
 	// dsh 内部字段（不从 yaml 读取）
-	Provider string `yaml:"-"` // deepseek-official
-	DSHome   string `yaml:"-"` // dsh 运行时 home 目录
+	Provider    string `yaml:"-"` // deepseek-official
+	DSHome      string `yaml:"-"` // dsh 运行时 home 目录
+	RuntimeDir  string `yaml:"-"` // dsh 子进程进程级工作目录（initialize.cwd）
 }
 
 // RawConfig 用于获取 cfg.yml 的原始 map 供 CLAUDE.md 模板渲染
@@ -127,6 +130,7 @@ func Load(dataDir string) (*Config, error) {
 	if cfg.LLM.DSHome == "" {
 		cfg.LLM.DSHome = dataDir + "/dsh-home"
 	}
+	cfg.LLM.RuntimeDir = cfg.DSHRuntimeDir()
 
 	// 校验
 	if cfg.LLM.BaseURL == "" {
@@ -135,6 +139,29 @@ func Load(dataDir string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// RuntimeTasksDir 返回会话工作目录根目录（本地运行与容器内统一约定，不落在 data/ 挂载卷内）。
+// 以 DATA_DIR 所在位置为基准：DATA_DIR=/app/data（容器）→ /app/runtime/tasks；
+// DATA_DIR=data（本地）→ runtime/tasks。
+func (c *Config) RuntimeTasksDir() string {
+	if dir := strings.TrimSpace(os.Getenv("RUNTIME_TASKS_DIR")); dir != "" {
+		return dir
+	}
+	abs, err := filepath.Abs(c.Sys.DataDir)
+	if err != nil {
+		abs = c.Sys.DataDir
+	}
+	return filepath.Join(filepath.Dir(abs), "runtime", "tasks")
+}
+
+// DSHRuntimeDir 返回 dsh 子进程的进程级兜底工作目录（Session 诞生时的初始 cwd）。
+// 它一定存在且可读写，仅作为 session 创建后再切换到真实会话目录之前的过渡目录。
+func (c *Config) DSHRuntimeDir() string {
+	if dir := strings.TrimSpace(os.Getenv("DSH_RUNTIME_DIR")); dir != "" {
+		return dir
+	}
+	return c.RuntimeTasksDir()
 }
 
 // RawConfig 返回原始 map（给 CLAUDE.md 模板用）

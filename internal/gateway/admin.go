@@ -1271,8 +1271,8 @@ func (h *AdminHandler) HandleSessionDelete(w http.ResponseWriter, r *http.Reques
 	// 逻辑删除：该 linkid 下未完成任务标记为 cancelled，session 标记为 closed，
 	cancelled := h.store.CancelByLinkid(session.LinkID)
 	h.store.CloseSession(sessionID)
-	// 删除工作目录
-	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(session.LinkID))
+	// 删除工作目录（按 sessionID 命名，位于 runtime/tasks）
+	workDir := engine.SessionWorkDir(h.cfg.RuntimeTasksDir(), sessionID)
 	if _, err := os.Stat(workDir); err == nil {
 		_ = os.RemoveAll(workDir)
 	}
@@ -1331,8 +1331,8 @@ func (h *AdminHandler) HandleSessionChat(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 切到该 session 对应 linkid 的工作目录（与任务处理时一致）
-	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(session.LinkID))
+	// 切到该 session 对应的工作目录（与任务处理时一致）
+	workDir := engine.SessionWorkDir(h.cfg.RuntimeTasksDir(), sessionID)
 	if err := ds.SetWorkingDirectory(sessionID, workDir); err != nil {
 		slog.Warn("chat set working directory failed", "session", sessionID, "workdir", workDir, "err", err)
 	}
@@ -1367,15 +1367,19 @@ func (h *AdminHandler) HandleChatNew(w http.ResponseWriter, r *http.Request) {
 	}
 
 	linkid := "chat-" + newToken()[:8]
-	workDir := filepath.Join(h.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkid))
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		writeJSON(w, 500, resp(5000, "创建工作目录失败: "+err.Error(), "", "", nil))
+	sessionID := "s-" + linkid
+
+	// 会话工作目录按 sessionID 命名，位于 runtime/tasks（不落在 data/ 挂载卷内）
+	runtimeTasksDir := h.cfg.RuntimeTasksDir()
+	if err := os.MkdirAll(runtimeTasksDir, 0755); err != nil {
+		writeJSON(w, 500, resp(5000, "创建运行时目录失败: "+err.Error(), "", "", nil))
 		return
 	}
+	workDir := engine.SessionWorkDir(runtimeTasksDir, sessionID)
 
-	// 写入 CLAUDE.md
-	if err := engine.BuildClaudeMd(workDir, h.store, h.cfg.RawConfig(), h.cfg.Sys.DataDir); err != nil {
-		writeJSON(w, 500, resp(5000, "写入 CLAUDE.md 失败: "+err.Error(), "", "", nil))
+	// 创建目录 + 写入 CLAUDE.md（仅在目录中无 CLAUDE.md 时写入）
+	if _, err := engine.BuildTaskDir(workDir, h.store, h.cfg.RawConfig(), h.cfg.Sys.DataDir); err != nil {
+		writeJSON(w, 500, resp(5000, "创建工作目录失败: "+err.Error(), "", "", nil))
 		return
 	}
 
@@ -1390,8 +1394,14 @@ func (h *AdminHandler) HandleChatNew(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ds.Close()
 
+	// 会话首次使用时，先切到其专属工作目录（SDK 会在该会话首次 prompt 时创建 session）
+	if err := ds.SetWorkingDirectory(sessionID, workDir); err != nil {
+		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "设置工作目录失败: " + err.Error()})
+		return
+	}
+
 	capturedSessionId := ""
-	result, err := ds.Run("s-"+linkid, body.Message, func(n harness.Notification) {
+	result, err := ds.Run(sessionID, body.Message, func(n harness.Notification) {
 		if n.Method == "session.event" {
 			if sid, _ := n.Payload["sessionId"].(string); sid != "" && capturedSessionId == "" {
 				capturedSessionId = sid
@@ -1429,14 +1439,6 @@ func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, v map[string]inte
 	data, _ := json.Marshal(v)
 	fmt.Fprintf(w, "data: %s\n\n", string(data))
 	flusher.Flush()
-}
-
-func sanitizeDirName(s string) string {
-	replacer := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_",
-		"\"", "_", "<", "_", ">", "_", "|", "_",
-	)
-	return replacer.Replace(s)
 }
 
 func maskIfPresent(s string) string {

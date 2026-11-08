@@ -20,6 +20,9 @@ data/tasks/
 data/dsh-home/
 data/memory/
 
+# 会话工作目录（本地运行；容器内为 /app/runtime/tasks，不映射）
+runtime/
+
 # HTTPS 证书（build.sh 自动生成，与 dp-agt 对齐）
 deploy/certs/
 

@@ -49,8 +49,9 @@ func main() {
 
 	// 目录
 	os.MkdirAll(cfg.Sys.DataDir, 0755)
-	os.MkdirAll(cfg.Sys.DataDir+"/tasks", 0755)
+	os.MkdirAll(cfg.Sys.DataDir+"/tasks", 0755) // 兼容旧数据，新任务改用 runtime/tasks
 	os.MkdirAll(cfg.Sys.DataDir+"/logs", 0755)
+	os.MkdirAll(cfg.RuntimeTasksDir(), 0755) // 会话工作目录根（本地/容器内统一）
 
 	// 存储
 	s, err := store.Open(cfg.Sys.DataDir)
@@ -477,12 +478,12 @@ func cleanupExpired(s *store.Store, cfg *config.Config) {
 
 	if len(expiredSessions) > 0 {
 		slog.Info("cleanup", "expired_sessions", len(expiredSessions))
-		activeLinks := s.ActiveSessionLinkIDs()
-		tasksDir := cfg.Sys.DataDir + "/tasks"
+		activeSessions := s.ActiveSessionIDs()
+		tasksDir := cfg.RuntimeTasksDir()
 		if entries, err := os.ReadDir(tasksDir); err == nil {
 			for _, e := range entries {
-				if e.IsDir() && !activeLinks[e.Name()] {
-					_ = os.RemoveAll(tasksDir + "/" + e.Name())
+				if e.IsDir() && !activeSessions[e.Name()] {
+					_ = os.RemoveAll(filepath.Join(tasksDir, e.Name()))
 				}
 			}
 		}

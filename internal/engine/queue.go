@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
-	"strings"
+	"os"
 	"sync"
 	"time"
 
@@ -211,8 +210,13 @@ func (q *Queue) processItem(item *QueueItem) {
 	_ = q.store.UpsertSession(sessionID, linkID)
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 
-	// 创建/复用 workdir
-	workDir := filepath.Join(q.cfg.Sys.DataDir, "tasks", sanitizeDirName(linkID))
+	// 创建/复用 workdir（按 sessionID 命名，位于 runtime/tasks，不落在 data/ 挂载卷内）
+	runtimeTasksDir := q.cfg.RuntimeTasksDir()
+	if err := os.MkdirAll(runtimeTasksDir, 0755); err != nil {
+		q.failTask(taskID, "创建运行时目录失败: "+err.Error())
+		return
+	}
+	workDir := SessionWorkDir(runtimeTasksDir, sessionID)
 	_, err := BuildTaskDir(workDir, q.store, q.cfg.RawConfig(), q.cfg.Sys.DataDir)
 	if err != nil {
 		q.failTask(taskID, "创建工作目录失败: "+err.Error())
@@ -253,9 +257,10 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	}
 
-	// 切换 session 的工作目录到当前任务的 workdir
+	// 切换 session 的工作目录到当前任务的 workdir（失败则终止任务，避免在兜底目录下误执行）
 	if err := q.ds.SetWorkingDirectory(sessionID, workDir); err != nil {
-		slog.Warn("set working directory failed", "session", sessionID, "workdir", workDir, "err", err)
+		q.failTask(taskID, "设置工作目录失败: "+err.Error())
+		return
 	}
 
 	var allEvents []harness.SessionEvent
@@ -334,14 +339,6 @@ func (q *Queue) failTask(taskID, errMsg string) {
 		"finished_at":   store.TimeNowFmt(),
 		"finished_ts":   store.TimeNowMs(),
 	})
-}
-
-func sanitizeDirName(s string) string {
-	r := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_",
-		"\"", "_", "<", "_", ">", "_", "|", "_",
-	)
-	return r.Replace(s)
 }
 
 func newUUID() string {

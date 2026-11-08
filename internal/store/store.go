@@ -884,8 +884,9 @@ func (s *Store) CleanupExpired(retentionDays int) (deletedTasks int, expiredSess
 	return
 }
 
-func (s *Store) ActiveSessionLinkIDs() map[string]bool {
-	rows, err := s.db.Query("SELECT linkid FROM sessions WHERE status = 'active'")
+// ActiveSessionIDs 返回所有 active session 的 session_id 集合（供磁盘清理用）。
+func (s *Store) ActiveSessionIDs() map[string]bool {
+	rows, err := s.db.Query("SELECT session_id FROM sessions WHERE status = 'active'")
 	if err != nil {
 		return nil
 	}

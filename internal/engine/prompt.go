@@ -253,6 +253,22 @@ func BuildTaskDir(workDir string, s *store.Store, rawCfg map[string]interface{},
 	return &claudeMdPath, nil
 }
 
+// SessionWorkDir 返回某个 session 的工作目录。
+// 根目录为 runtime/tasks（不落在 data/ 挂载卷内），子目录按 sessionID 命名，
+// 保证同一 linkid 复用 session 时目录稳定，且不会因 linkid 变化丢失上下文。
+func SessionWorkDir(runtimeTasksDir, sessionID string) string {
+	return filepath.Join(runtimeTasksDir, SanitizeDirName(sessionID))
+}
+
+// SanitizeDirName 清理目录名中的非法字符（与 linkid 目录名清理逻辑一致）。
+func SanitizeDirName(s string) string {
+	r := strings.NewReplacer(
+		"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_",
+		"\"", "_", "<", "_", ">", "_", "|", "_",
+	)
+	return r.Replace(s)
+}
+
 func loadFile(relativePath string) string {
 	candidates := []string{
 		filepath.Join("prompts", relativePath),
