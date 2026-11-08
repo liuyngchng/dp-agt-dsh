@@ -279,6 +279,11 @@ func (s *Store) GetTaskBySessionID(sessionID string) (*TaskLog, error) {
 	return s.getTaskByWhere("session_id = ? ORDER BY created_at DESC LIMIT 1", sessionID)
 }
 
+// ListTasksBySessionID 按 session_id 列出所有任务，按创建时间升序（会话历史用）
+func (s *Store) ListTasksBySessionID(sessionID string) ([]TaskLog, error) {
+	return s.queryTasks("WHERE session_id = ? ORDER BY created_ts ASC", sessionID)
+}
+
 // ListTasksByLinkid 按 linkid 列出所有任务，按 finished_ts 升序（历史时间线用）
 func (s *Store) ListTasksByLinkid(linkID string, limit int) ([]TaskLog, error) {
 	if limit <= 0 {

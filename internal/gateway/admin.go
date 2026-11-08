@@ -323,21 +323,76 @@ func (h *AdminHandler) getSessionSnapshot(sessionID string) map[string]interface
 	}
 }
 
-// loadSessionEvents 从 DB 反序列化 session 对应的 sdk_trace
+// loadSessionEvents 从 DB 反序列化 session 对应的全部 sdk_trace。
+//
+// DSH SDK 没有类似 Claude Agent SDK 的 getSessionMessages() 可以从磁盘会话文件
+// 直接读全量历史；每条消息只能从 task_logs.sdk_trace 拿到，且 sdk_trace 只在任务
+// 结束时才落库。同一 session 被 resume 复用后，历史被拆到多条 task 的 sdk_trace 里，
+// 单取最新一条会导致「重新打开只看到实时推送、看不到历史」。因此这里合并该 session
+// 名下所有 task 的 sdk_trace，按 task 创建时间升序拼接，并按消息 id 去重（resume
+// 重放可能带来重复的 user/assistant 消息）。
 func (h *AdminHandler) loadSessionEvents(sessionID string) []map[string]interface{} {
-	taskID := strings.TrimPrefix(sessionID, "s-")
-	task, _ := h.store.GetTaskLog(taskID)
-	if task == nil {
-		task, _ = h.store.GetTaskBySessionID(sessionID)
+	tasks, err := h.store.ListTasksBySessionID(sessionID)
+	if err != nil || len(tasks) == 0 {
+		// 兜底：老数据可能 session_id 未回填，退回按 task_id / 最新 task 查
+		taskID := strings.TrimPrefix(sessionID, "s-")
+		task, _ := h.store.GetTaskLog(taskID)
+		if task == nil {
+			task, _ = h.store.GetTaskBySessionID(sessionID)
+		}
+		if task == nil {
+			return nil
+		}
+		tasks = []store.TaskLog{*task}
 	}
-	if task == nil || task.SdkTrace == "" {
-		return nil
-	}
+
 	var events []map[string]interface{}
-	if err := json.Unmarshal([]byte(task.SdkTrace), &events); err != nil {
-		return nil
+	seen := make(map[string]bool)
+	for _, t := range tasks {
+		if t.SdkTrace == "" {
+			continue
+		}
+		var batch []map[string]interface{}
+		if err := json.Unmarshal([]byte(t.SdkTrace), &batch); err != nil {
+			continue
+		}
+		for _, ev := range batch {
+			// 去重：优先用消息 id（data.message.id 或 data.id），否则用 type+time 兜底。
+			key := eventDedupKey(ev)
+			if key != "" {
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+			}
+			events = append(events, ev)
+		}
 	}
 	return events
+}
+
+// eventDedupKey 生成会话事件的去重键；非消息事件返回空（不参与去重，保留原始顺序）。
+func eventDedupKey(ev map[string]interface{}) string {
+	evType := getStr(ev, "type")
+	if evType != "user/message" && evType != "assistant/message" {
+		return ""
+	}
+	data, _ := ev["data"].(map[string]interface{})
+	if data == nil {
+		return evType + "|" + getStr(ev, "time")
+	}
+	// assistant/message 内容在 data.message.id；user/message 在 data.id
+	id := ""
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		id = getStr(msg, "id")
+	}
+	if id == "" {
+		id = getStr(data, "id")
+	}
+	if id != "" {
+		return evType + "|" + id
+	}
+	return evType + "|" + getStr(ev, "time")
 }
 
 // notificationToFrontend 把原始 SDK 通知转换为前端 viewSession 兼容的消息列表

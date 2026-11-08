@@ -116,6 +116,10 @@ func (c *Client) Start() error {
 		c.dsHome = filepath.Join(os.TempDir(), "dp-agt-dsh-home")
 	}
 	env = append(env, "DSH_HOME="+c.dsHome)
+	// DSH SDK 默认沙箱模式为 workspace-write，依赖 bwrap/Landlock
+	// OS 级文件隔离。本系统单租户运行，无多租户隔离需求，直接切到
+	// danger-full-access，与 dp-agt 的 bypassPermissions 语义一致。
+	env = append(env, "DSH_PERMISSION_MODE=danger-full-access")
 	_ = os.MkdirAll(c.dsHome, 0755)
 
 	runtimeDir := c.runtimeDir

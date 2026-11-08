@@ -264,6 +264,9 @@ func (q *Queue) processItem(item *QueueItem) {
 	}
 
 	var allEvents []harness.SessionEvent
+	// 增量落库：任务处理中每收到一条 session event 就按时间节流持久化 sdk_trace，
+	// 使「处理中重新打开会话记录」时 DB 已有部分 trace，snapshot 能拉到已产生的历史消息。
+	var lastPersist time.Time
 
 	result, err := q.ds.Run(sessionID, rendered, func(n harness.Notification) {
 		PublishStream(sessionID, n)
@@ -276,6 +279,12 @@ func (q *Queue) processItem(item *QueueItem) {
 					Data: getMap(ev, "data"), // 内层 data，不含外层外壳
 					Time: getInt64(ev, "time"),
 				})
+				if time.Since(lastPersist) >= time.Second {
+					if trace, err := json.Marshal(allEvents); err == nil {
+						_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"sdk_trace": string(trace)})
+					}
+					lastPersist = time.Now()
+				}
 			}
 		}
 	})
