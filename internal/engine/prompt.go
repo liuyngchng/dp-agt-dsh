@@ -142,6 +142,31 @@ func dig(obj map[string]interface{}, path string) interface{} {
 	return cur
 }
 
+// KeyToEnvName 把 prompt_config 的 key 转为 DP_ 前缀环境变量名：点→下划线，全大写。
+// 与 dp-agt 的 keyToEnvName 语义一致。
+func KeyToEnvName(key string) string {
+	return "DP_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+}
+
+// BuildBusinessEnv 根据 prompt_config（全量明文）构建注入 dsh 子进程的业务环境变量。
+// 除 DP_ 前缀变量外，还保留几个兼容旧名，供提示词中 $FILE_URL_TOKEN 等直接引用。
+func BuildBusinessEnv(cfgVals map[string]string) map[string]string {
+	env := make(map[string]string, len(cfgVals)+3)
+	for k, v := range cfgVals {
+		env[KeyToEnvName(k)] = v
+	}
+	if v := cfgVals["doc.file_url_token"]; v != "" {
+		env["FILE_URL_TOKEN"] = v
+	}
+	if v := cfgVals["doc_audit.token"]; v != "" {
+		env["DOC_AUDIT_TOKEN"] = v
+	}
+	if v := cfgVals["callback.token"]; v != "" {
+		env["CALLBACK_TOKEN"] = v
+	}
+	return env
+}
+
 // BuildClaudeMd 构建 CLAUDE.md 并把它写入工作目录
 func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}, dataDir string) error {
 	// 加载主模板
@@ -168,8 +193,8 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 	// 加载所有 sections
 	sections := loadAllFiles()
 
-	// {{section:name:trigger_key}}
-	reSection := regexp.MustCompile(`\{\{section:(\w+):([\w.]+)\}\}`)
+	// {{section:name:trigger_key}}（name 允许含连字符，如 workflow-transfer）
+	reSection := regexp.MustCompile(`\{\{section:([\w-]+):([\w.]+)\}\}`)
 	template = reSection.ReplaceAllStringFunc(template, func(match string) string {
 		parts := reSection.FindStringSubmatch(match)
 		name := parts[1]
@@ -230,6 +255,26 @@ func BuildClaudeMd(workDir string, s *store.Store, rawCfg map[string]interface{}
 				desc = item.Title
 			}
 			b.WriteString("| " + filepath.Join(memAbs, item.Filename) + " | " + desc + " |\n")
+		}
+		template += b.String()
+	}
+
+	// 注入可用环境变量清单（值不写入提示词，仅列出变量名 + 说明），
+	// 与 dp-agt 行为一致，便于 Agent 按需读取 token 等变量而不必盲猜。
+	if rows := s.ListConfigRows(false); len(rows) > 0 {
+		var b strings.Builder
+		b.WriteString("\n## 可用环境变量\n\n")
+		b.WriteString("以下变量已注入到当前 shell 环境，可在 Bash 中按需读取（如 `echo $变量名`）。")
+		b.WriteString("变量名以 `DP_` 为前缀；按 key 或说明理解其含义，需要时再取值，不必一次性全部读取。\n\n")
+		b.WriteString("| 环境变量名 | key | 说明 | 是否敏感 |\n")
+		b.WriteString("|-----------|-----|------|---------|\n")
+		for _, r := range rows {
+			secret := "否"
+			if r.IsSecret {
+				secret = "是"
+			}
+			note := strings.ReplaceAll(r.Note, "|", "\\|")
+			b.WriteString("| `$" + KeyToEnvName(r.Key) + "` | `" + r.Key + "` | " + note + " | " + secret + " |\n")
 		}
 		template += b.String()
 	}

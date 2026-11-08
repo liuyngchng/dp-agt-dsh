@@ -74,6 +74,9 @@ type Client struct {
 	// runtimeDir 是 dsh 子进程的进程级工作目录（initialize.cwd 与 cmd.Dir）。
 	// 它必须存在且可读写，作为 session 创建后再切换到真实会话目录之前的过渡目录。
 	runtimeDir string
+
+	// extraEnv 是启动 dsh 子进程时额外注入的环境变量（业务配置，如 FILE_URL_TOKEN 等）。
+	extraEnv map[string]string
 }
 
 // NewClient 创建 dsh harness 客户端（不启动进程）
@@ -88,7 +91,16 @@ func NewClient(cfg config.LLMConfig) *Client {
 		apiKey:     cfg.AuthToken,
 		dsHome:     cfg.DSHome,
 		runtimeDir: cfg.RuntimeDir,
+		extraEnv:   make(map[string]string),
 	}
+}
+
+// SetExtraEnv 设置启动 dsh 子进程时额外注入的环境变量（需在 Start 之前调用）。
+// 用于把业务配置（token、回调地址等）透传给提示词中引用的 $FILE_URL_TOKEN 等变量。
+func (c *Client) SetExtraEnv(env map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extraEnv = env
 }
 
 // Start 启动 dsh 子进程 + 初始化握手
@@ -120,6 +132,13 @@ func (c *Client) Start() error {
 	// OS 级文件隔离。本系统单租户运行，无多租户隔离需求，直接切到
 	// danger-full-access，与 dp-agt 的 bypassPermissions 语义一致。
 	env = append(env, "DSH_PERMISSION_MODE=danger-full-access")
+
+	// 注入业务配置（prompt_config 中的所有 key-value），
+	// 使提示词中引用的 $FILE_URL_TOKEN、$CALLBACK_TOKEN 等变量对 Agent 可见。
+	for k, v := range c.extraEnv {
+		env = append(env, k+"="+v)
+	}
+
 	_ = os.MkdirAll(c.dsHome, 0755)
 
 	runtimeDir := c.runtimeDir

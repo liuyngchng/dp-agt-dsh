@@ -34,6 +34,13 @@
   例如 `unitOfReceipt = "某外部单位"` 这类外部单位来文。
 - **部门收文**：来文在本公司内部部门之间或部门内部流转。
 
+**判定优先级（从强到弱）**：
+1. 正文内容中能明确判断发文/来文单位归属的，以正文为准；
+2. `form_data.unitOfReceipt`（来文单位）非空时，据此判断（外部单位 → 公司收文；内部部门 → 部门收文）；
+3. 正文无法下载、`unitOfReceipt` 为空时，参考 `form_data.title`（标题）、`form_data.type`、
+   `workflowDefine_name` 等字段：若标题或名称中含「公司收文」→ 公司收文；含「部门收文 / 处室收文」→ 部门收文；
+4. 以上均无法判断时才置 `need_human: true` 并在 `fail_reason` 说明原因。
+
 ### 步骤 3：获取工作流表单 ID
 
 调用工作流转接口，获取 `workflowFormName` 对应的表单 ID（`workflowFormId`）。

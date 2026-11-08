@@ -8,6 +8,19 @@
   `curl -s -k --noproxy '*' -w'\n' -H "Authorization: Bearer $FILE_URL_TOKEN" '<file_url>' -o 文件名`
 - 用 curl 下载文件到当前工作目录
 
+## 网络连通性预检（避免反复重试）
+
+如果一次下载或接口调用因「无法解析主机 / 连接失败」而失败，先用**一条命令**批量探测所有
+后续可能用到的 host，确认哪些可达、哪些不可达，再据此决定回退方案，**不要**逐个 host 反复重试：
+
+```bash
+for h in <文件host> <回调host> <工作流转host> <工作流配置host> doc-util rd-cli; do \
+  if getent hosts "$h" >/dev/null 2>&1; then echo "$h: 可解析"; else echo "$h: 不可解析"; fi; done
+```
+
+- `doc-util` 是同网络内部服务（解析、转换文档），其余 host 来自请求 JSON 与配置。
+- 一旦确认某 host 不可达，**不要**再对它发起 curl 重试；直接走对应任务的回退分支。
+
 {{section:wps:doc.renew_file_url_api}}
 
 ## 文档解析服务
@@ -74,5 +87,8 @@ curl -s -k --noproxy '*' -w'\n' -X POST {{doc.doc_util_url}}/convert/doc \
 6. 如果请求涉及某个文件但上下文里没有其文本内容（历史已压缩或新文件），
    按"文件下载"章节自行 curl 下载，并调用文档解析服务提取文本后再分析。
    若上下文里已有该文件的文本，直接复用，无需重复下载。
+7. 若正文确实无法下载，但 `form_data`（标题、来文单位、所属部门、类型等）已足够做出任务判断，
+   优先依据 `form_data` 给出结果，仅在确实无法判断时才置 need_human: true；
+   不要因为下载失败就放弃可以完成的判断。
 
 {{section:callback:callback.url}}

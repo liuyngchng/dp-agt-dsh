@@ -337,6 +337,8 @@ func (q *Queue) ensureDSH() error {
 		return nil
 	}
 	ds := harness.NewClient(q.cfg.LLM)
+	// 注入业务配置（token、回调地址等），供提示词中 $FILE_URL_TOKEN 等变量引用
+	ds.SetExtraEnv(BuildBusinessEnv(q.store.GetAllConfigPlain()))
 	if err := ds.Start(); err != nil {
 		return err
 	}

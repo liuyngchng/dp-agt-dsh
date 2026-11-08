@@ -1443,6 +1443,7 @@ func (h *AdminHandler) HandleChatNew(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	ds := harness.NewClient(h.cfg.LLM)
+	ds.SetExtraEnv(engine.BuildBusinessEnv(h.store.GetAllConfigPlain()))
 	if err := ds.Start(); err != nil {
 		sendSSEEvent(w, flusher, map[string]interface{}{"type": "error", "message": "启动运行时失败: " + err.Error()})
 		return
