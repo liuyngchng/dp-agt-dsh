@@ -634,6 +634,16 @@ input[type="file"]::file-selector-button:hover {
     padding-left: 8px;
 }
 
+/* 会话工作目录文件浏览列表（复用提示词模板文件树的 .file-tree-row 等样式） */
+#sessionFilesList {
+    max-height: 508px;
+    overflow-y: auto;
+    padding: 10px 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background: #fff;
+}
+
 .form-g textarea {
     font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
     font-size: 0.85rem;

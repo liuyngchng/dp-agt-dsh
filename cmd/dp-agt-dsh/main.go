@@ -388,9 +388,33 @@ func main() {
 		}
 	})
 
-	// 会话记录（一次性拉取历史 + 实时流 + 续聊 + 删除）
+	// 会话记录（一次性拉取历史 + 实时流 + 续聊 + 删除 + 工作目录文件浏览）
 	adminMux.HandleFunc("/admin/sessions/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		if strings.HasSuffix(path, "/files") {
+			if r.Method == "GET" {
+				ah.HandleSessionFiles(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if strings.HasSuffix(path, "/file-content") {
+			if r.Method == "GET" {
+				ah.HandleSessionFileContent(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if strings.HasSuffix(path, "/file-download") {
+			if r.Method == "GET" {
+				ah.HandleSessionFileDownload(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
 		if strings.HasSuffix(path, "/stream") {
 			ah.HandleSessionStream(w, r)
 			return

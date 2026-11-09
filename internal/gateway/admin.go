@@ -11,9 +11,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +33,11 @@ type AdminHandler struct {
 
 func NewAdminHandler(cfg *config.Config, s *store.Store, q *engine.Queue) *AdminHandler {
 	return &AdminHandler{cfg: cfg, store: s, queue: q}
+}
+
+// sessionWorkDir 返回某 session 的工作目录（与会话管理、任务处理保持一致）
+func (h *AdminHandler) sessionWorkDir(session *store.Session) string {
+	return engine.SessionWorkDir(h.cfg.RuntimeTasksDir(), session.SessionID)
 }
 
 // ── Mock 数据 ──
@@ -1322,10 +1329,86 @@ func (h *AdminHandler) HandlePromptTarDownload(w http.ResponseWriter, r *http.Re
 
 func (h *AdminHandler) HandlePromptPreview(w http.ResponseWriter, r *http.Request) {
 	type fv struct {
-		File string `json:"file"`
-		Raw  string `json:"raw"`
+		File      string `json:"file"`
+		Raw       string `json:"raw"`
+		Variables []struct {
+			Type  string `json:"type"`
+			Label string `json:"label"`
+			Hint  string `json:"hint"`
+		} `json:"variables"`
 	}
 	var out []fv
+
+	// 环境变量名 → { key, note } 反向映射（与 engine.KeyToEnvName / BuildBusinessEnv 保持一致）
+	envMap := make(map[string]struct{ key, note string })
+	for _, row := range h.store.ListConfigRows(false) {
+		envMap[engine.KeyToEnvName(row.Key)] = struct{ key, note string }{row.Key, row.Note}
+	}
+	// 兼容旧名称（与 engine.BuildBusinessEnv 保持一致）
+	envMap["FILE_URL_TOKEN"] = struct{ key, note string }{"doc.file_url_token", "文件下载 Bearer Token"}
+	envMap["DOC_AUDIT_TOKEN"] = struct{ key, note string }{"doc_audit.token", "文档审核服务 Token"}
+	envMap["CALLBACK_TOKEN"] = struct{ key, note string }{"callback.token", "回调 Token"}
+
+	extractVariables := func(content string) []struct {
+		Type  string `json:"type"`
+		Label string `json:"label"`
+		Hint  string `json:"hint"`
+	} {
+		seen := make(map[string]bool)
+		var vars []struct {
+			Type  string `json:"type"`
+			Label string `json:"label"`
+			Hint  string `json:"hint"`
+		}
+		add := func(t, label, hint string) {
+			if seen[label] {
+				return
+			}
+			seen[label] = true
+			vars = append(vars, struct {
+				Type  string `json:"type"`
+				Label string `json:"label"`
+				Hint  string `json:"hint"`
+			}{t, label, hint})
+		}
+
+		// 1) {{...}} 占位符
+		rePH := regexp.MustCompile(`\{\{([^}]+)\}\}`)
+		for _, m := range rePH.FindAllStringSubmatch(content, -1) {
+			inner := strings.TrimSpace(m[1])
+			if sec := regexp.MustCompile(`^section:([\w-]+):([\w.]+)$`).FindStringSubmatch(inner); sec != nil {
+				add("section", inner, fmt.Sprintf("片段 %s，由变量 %s 触发", sec[1], sec[2]))
+			} else if strings.HasPrefix(inner, "request.") {
+				add("request", inner, "请求变量")
+			} else if inner == "task_id" {
+				add("task", inner, "任务编号")
+			} else {
+				add("config", inner, "系统变量")
+			}
+		}
+
+		// 2) shell 环境变量引用 $ENV / ${ENV}
+		reEnv := regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+		for _, ref := range reEnv.FindAllString(content, -1) {
+			name := strings.TrimPrefix(strings.TrimPrefix(ref, "${"), "$")
+			name = strings.TrimPrefix(name, "$")
+			name = strings.TrimSuffix(name, "}")
+			// 跳过 SDK 网关自身变量，仅保留业务相关环境变量
+			if strings.HasPrefix(name, "ANTHROPIC_") || name == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" ||
+				name == "CLAUDE_CODE_ATTRIBUTION_HEADER" || name == "CLAUDE_CODE_AUTO_MODE_SERVER" {
+				continue
+			}
+			hint := "环境变量"
+			if info, ok := envMap[name]; ok {
+				hint = info.key
+				if info.note != "" {
+					hint += " — " + info.note
+				}
+			}
+			add("env", "${"+name+"}", hint)
+		}
+		return vars
+	}
 
 	// 直接遍历 prompts/ 目录，返回所有 .md 文件（包括 claude-md.md、sections/*.md）
 	// 与 ScanPromptsDir 不同：预览要展示所有模板文件，而非仅暴露为访问路径的文件。
@@ -1347,7 +1430,8 @@ func (h *AdminHandler) HandlePromptPreview(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				return nil
 			}
-			out = append(out, fv{File: rel, Raw: string(data)})
+			raw := string(data)
+			out = append(out, fv{File: rel, Raw: raw, Variables: extractVariables(raw)})
 			return nil
 		})
 		break
@@ -1718,6 +1802,178 @@ func (h *AdminHandler) HandleSessionDelete(w http.ResponseWriter, r *http.Reques
 	}
 	slog.Info("session_deleted", "session", sessionID, "linkid", session.LinkID, "cancelled_tasks", cancelled)
 	writeJSON(w, 200, resp(0, "已删除", "", "", nil))
+}
+
+// ── 会话工作目录文件浏览 ──
+
+// HandleSessionFiles 递归列出会话工作目录下的所有文件，返回扁平数组。
+func (h *AdminHandler) HandleSessionFiles(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/sessions/"), "/files")
+	sessionID = strings.Trim(sessionID, "/")
+	if sessionID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
+		return
+	}
+	session, _ := h.store.GetSession(sessionID)
+	if session == nil {
+		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
+		return
+	}
+	workDir := h.sessionWorkDir(session)
+	if _, err := os.Stat(workDir); err != nil {
+		writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"workDir": workDir, "files": []interface{}{}}))
+		return
+	}
+
+	type fileEntry struct {
+		Path       string `json:"path"`
+		Size       int64  `json:"size"`
+		IsDir      bool   `json:"isDir"`
+		ModifiedAt string `json:"modifiedAt"`
+	}
+	entries := make([]fileEntry, 0)
+
+	var walkDir func(dir, prefix string)
+	walkDir = func(dir, prefix string) {
+		items, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, item := range items {
+			name := item.Name()
+			if strings.HasPrefix(name, ".") {
+				continue // 跳过隐藏文件
+			}
+			full := filepath.Join(dir, name)
+			rel := prefix + name
+			info, err := os.Lstat(full)
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				entries = append(entries, fileEntry{Path: rel + "/", Size: 0, IsDir: true, ModifiedAt: info.ModTime().Format(time.RFC3339)})
+				walkDir(full, rel+"/")
+			} else {
+				entries = append(entries, fileEntry{Path: rel, Size: info.Size(), IsDir: false, ModifiedAt: info.ModTime().Format(time.RFC3339)})
+			}
+		}
+	}
+	walkDir(workDir, "")
+
+	// 排序：目录在前，文件在后；同类按名称排序
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		return entries[i].Path < entries[j].Path
+	})
+
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{"workDir": workDir, "files": entries}))
+}
+
+// HandleSessionFileContent 读取会话工作目录下的文件内容（文本文件返回 JSON 供预览）。
+func (h *AdminHandler) HandleSessionFileContent(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/sessions/"), "/file-content")
+	sessionID = strings.Trim(sessionID, "/")
+	relPath := r.URL.Query().Get("path")
+	if sessionID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
+		return
+	}
+	if relPath == "" {
+		writeJSON(w, 400, resp(1001, "缺少 path 参数", "", "", nil))
+		return
+	}
+
+	session, _ := h.store.GetSession(sessionID)
+	if session == nil {
+		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
+		return
+	}
+
+	workDir := h.sessionWorkDir(session)
+	fullPath, ok := h.safeWorkPath(workDir, relPath)
+	if !ok {
+		writeJSON(w, 403, resp(1001, "路径非法", "", "", nil))
+		return
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || info.IsDir() {
+		writeJSON(w, 404, resp(1001, "文件不存在", "", "", nil))
+		return
+	}
+
+	// 大小限制：超过 512KB 拒绝预览，提示下载
+	if info.Size() > 512*1024 {
+		writeJSON(w, 413, resp(1001, "文件过大，请使用下载", "", "", nil))
+		return
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil || !isTextFile(data) {
+		writeJSON(w, 415, resp(1001, "无法读取为文本文件", "", "", nil))
+		return
+	}
+	writeJSON(w, 200, resp(0, "success", "", "", map[string]interface{}{
+		"path": relPath, "size": info.Size(), "content": string(data),
+	}))
+}
+
+// HandleSessionFileDownload 下载会话工作目录下的任意文件。
+func (h *AdminHandler) HandleSessionFileDownload(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/sessions/"), "/file-download")
+	sessionID = strings.Trim(sessionID, "/")
+	relPath := r.URL.Query().Get("path")
+	if sessionID == "" {
+		writeJSON(w, 400, resp(1001, "缺少 session_id", "", "", nil))
+		return
+	}
+	if relPath == "" {
+		writeJSON(w, 400, resp(1001, "缺少 path 参数", "", "", nil))
+		return
+	}
+
+	session, _ := h.store.GetSession(sessionID)
+	if session == nil {
+		writeJSON(w, 404, resp(1001, "会话不存在", "", "", nil))
+		return
+	}
+
+	workDir := h.sessionWorkDir(session)
+	fullPath, ok := h.safeWorkPath(workDir, relPath)
+	if !ok {
+		writeJSON(w, 403, resp(1001, "路径非法", "", "", nil))
+		return
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || info.IsDir() {
+		writeJSON(w, 404, resp(1001, "文件不存在", "", "", nil))
+		return
+	}
+
+	basename := filepath.Base(fullPath)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+url.PathEscape(basename)+`"`)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	http.ServeFile(w, r, fullPath)
+}
+
+// safeWorkPath 校验相对路径并拼接为工作目录下的绝对路径，防止路径穿越。
+func (h *AdminHandler) safeWorkPath(workDir, relPath string) (string, bool) {
+	full := filepath.Join(workDir, filepath.Clean(relPath))
+	workDirAbs, _ := filepath.Abs(workDir)
+	fullAbs, _ := filepath.Abs(full)
+	if fullAbs != workDirAbs && !strings.HasPrefix(fullAbs, workDirAbs+string(filepath.Separator)) {
+		return "", false
+	}
+	return full, true
+}
+
+// isTextFile 粗略判断内容是否可作为 UTF-8 文本预览（不含 NUL 字节）。
+func isTextFile(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	return !bytes.Contains(data, []byte{0})
 }
 
 // HandleSessionChat 会话续聊（debug 用）：复用原 session 上下文发送消息 SSE 流
