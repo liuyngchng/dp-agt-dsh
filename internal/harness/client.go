@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"dp-agt-dsh/internal/config"
@@ -64,6 +65,9 @@ type Client struct {
 
 	initialized bool
 	closed      atomic.Bool
+	// exited 标记 dsh 子进程是否已退出（readLoop 检测到 stdout 关闭时置位）。
+	// 供队列判断进程是否崩溃，进程退出后重建客户端。
+	exited atomic.Bool
 
 	model    string
 	provider string
@@ -198,6 +202,23 @@ func (c *Client) Start() error {
 	slog.Info("initialized", "server", initResult.ServerInfo.Name, "version", initResult.ServerInfo.Version, "model", c.model)
 	c.initialized = true
 	return nil
+}
+
+// IsAlive 判断 dsh 子进程当前是否存活。
+// 进程正常/异常退出时 stdout 管道会关闭，readLoop 检测到后置 exited 标志。
+// 返回 false 表示进程已退出或从未启动，调用方应放弃当前 client 并重建。
+func (c *Client) IsAlive() bool {
+	if c.cmd == nil || c.closed.Load() || c.exited.Load() {
+		return false
+	}
+	// 进程级探测兜底：Signal(0) 不发送信号，仅校验进程是否存在。
+	// 覆盖 exited 标志尚未置位（stdout 关闭与标志置位之间的极小窗口）的情况。
+	if c.cmd.Process != nil {
+		if err := c.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // Close 安全关闭 dsh 子进程
@@ -519,6 +540,7 @@ func (c *Client) readLoop() {
 	}
 
 	// stdout 关闭 → 广播关闭
+	c.exited.Store(true)
 	c.subMu.Lock()
 	for _, s := range c.subs {
 		close(s.ch)

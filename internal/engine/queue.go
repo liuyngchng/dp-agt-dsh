@@ -19,17 +19,24 @@ import (
 type Queue struct {
 	cfg   *config.Config
 	store *store.Store
-	ds    *harness.Client
 
 	mu      sync.Mutex
 	pending []*QueueItem
 	running int
 
+	// dsMu 保护 ds 的懒启动/重建，避免并发任务同时启动多个 dsh 子进程。
+	dsMu sync.Mutex
+	ds   *harness.Client
+
 	linkMu     sync.Mutex
 	linkChains map[string]chan struct{}
 
-	// 运行中任务的 session 映射：task_id → sessionID，供管理员取消
+	// runningSessions 记录运行中任务的 task_id → sessionID，供管理员取消 processing 任务。
 	runningSessions sync.Map
+
+	// inflight 记录「已从 pending 出队、但尚未注册 session」的过渡期任务。
+	// 解决 pump 弹出到 runningSessions.Store 之间取消失败的竞态窗口（Bug #3）。
+	inflight sync.Map
 }
 
 type QueueItem struct {
@@ -61,17 +68,36 @@ func (q *Queue) recoverOrphanedTasks() {
 		switch task.Status {
 		case store.StatusPending:
 			// pending 任务重新入队
-			if iface, err := q.store.GetInterfaceByPath(task.Path); err == nil && iface != nil {
-				var body map[string]interface{}
-				if json.Unmarshal([]byte(task.RequestBody), &body) == nil {
-					q.pending = append(q.pending, &QueueItem{
-						TaskID: task.TaskID,
-						Path:   task.Path,
-						Iface:  iface,
-						Body:   body,
-					})
-					resumed++
-				}
+			iface, ifaceErr := q.store.GetInterfaceByPath(task.Path)
+			if ifaceErr != nil || iface == nil {
+				// 接口已被删除（如重新上传提示词包）时不能静默丢弃，
+				// 标记失败并记录原因，避免任务对用户「凭空消失」（Bug #4）。
+				_ = q.store.UpdateTaskResult(task.TaskID, map[string]interface{}{
+					"status":        string(store.StatusFailed),
+					"error_message": "服务重启后接口不存在，任务无法恢复: " + task.Path,
+					"finished_at":   store.TimeNowFmt(),
+					"finished_ts":   store.TimeNowMs(),
+				})
+				killed++
+				continue
+			}
+			var body map[string]interface{}
+			if json.Unmarshal([]byte(task.RequestBody), &body) == nil {
+				q.pending = append(q.pending, &QueueItem{
+					TaskID: task.TaskID,
+					Path:   task.Path,
+					Iface:  iface,
+					Body:   body,
+				})
+				resumed++
+			} else {
+				_ = q.store.UpdateTaskResult(task.TaskID, map[string]interface{}{
+					"status":        string(store.StatusFailed),
+					"error_message": "服务重启后请求体解析失败，任务无法恢复",
+					"finished_at":   store.TimeNowFmt(),
+					"finished_ts":   store.TimeNowMs(),
+				})
+				killed++
 			}
 		case store.StatusProcessing:
 			// processing 任务（进程中断）标记失败
@@ -146,6 +172,10 @@ func (q *Queue) pump() {
 		q.running++
 		q.mu.Unlock()
 
+		// 从 pending 弹出的瞬间即标记为 inflight，覆盖「已出队但尚未注册 session」
+		// 的取消竞态窗口（Bug #3）。inflight 记录 taskID → 取消标记。
+		q.inflight.Store(item.TaskID, false)
+
 		linkID, _ := item.Body["linkid"].(string)
 		q.linkMu.Lock()
 		prev, exists := q.linkChains[linkID]
@@ -154,6 +184,8 @@ func (q *Queue) pump() {
 		q.linkMu.Unlock()
 
 		go func(it *QueueItem, prevCh chan struct{}, nextCh chan struct{}, lid string) {
+			defer q.inflight.Delete(it.TaskID) // clean up inflight marker after task finishes
+
 			if exists && prevCh != nil {
 				<-prevCh
 			}
@@ -180,6 +212,18 @@ func (q *Queue) pump() {
 func (q *Queue) processItem(item *QueueItem) {
 	taskID := item.TaskID
 	linkID, _ := item.Body["linkid"].(string)
+
+	// 覆盖 inflight 窗口：任务从 pending 弹出后、注册 runningSessions 前被取消。
+	if v, ok := q.inflight.Load(taskID); ok && v == true {
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"error_message": "任务已被管理员取消",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		slog.Info("task cancelled in inflight window", "task", taskID, "link", linkID)
+		return
+	}
 
 	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"status": string(store.StatusProcessing)})
 	slog.Info("processing", "task", taskID, "link", linkID, "path", item.Path)
@@ -250,9 +294,15 @@ func (q *Queue) processItem(item *QueueItem) {
 		return
 	}
 
+	// 获取 stable 的 ds 引用（ensureDSH 成功后，ds 在 dsMu 保护下为非 nil）。
+	// 后续本 goroutine 内不再加锁直接使用 ds，确保同一 ds 引用贯穿整个任务生命周期。
+	q.dsMu.Lock()
+	ds := q.ds
+	q.dsMu.Unlock()
+
 	// resume 或新建
 	if resumeID != "" {
-		if err := q.ds.ResumeSession(resumeID); err != nil {
+		if err := ds.ResumeSession(resumeID); err != nil {
 			slog.Warn("resume failed, starting fresh", "session", resumeID, "err", err)
 			sessionID = "s-" + taskID
 			_ = q.store.UpsertSession(sessionID, linkID)
@@ -261,7 +311,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	} else {
 		// 新 session：显式用 session/new + cwd 创建，让工作目录一开始就正确，
 		// 而不是先继承 initialize 兜底目录、再用 working-directory/set 切换。
-		realID, err := q.ds.NewSession(workDir)
+		realID, err := ds.NewSession(workDir)
 		if err != nil {
 			slog.Warn("session/new failed, falling back to prompt-time create", "session", sessionID, "err", err)
 		} else {
@@ -271,13 +321,31 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	}
 
-	// 注册 task→session 映射，供管理员取消 processing 任务
+	// 注册 task→session 映射，供管理员取消 processing 任务。
+	// 此处必须在 inflight 检查通过且 runningSessions.Store 之前，再次检查 inflight 取消标记，
+	// 防止 just-in-time 竞争：管理员在 processItem 开始检查与 Store 之间取消了任务（Bug #3）。
 	q.runningSessions.Store(taskID, sessionID)
 	defer q.runningSessions.Delete(taskID)
 
+	// 兜底检查：Store 与 defer 之间的极小窗口内取消？CancelTask 会先 Load 再
+	// CancelSession，runningSessions.Store 已完成后取消能被正确捕获。但若取消
+	// 发生在 Store 之前，我们需要二次检查 inflight 标记。
+	if v, ok := q.inflight.Load(taskID); ok && v == true {
+		_ = ds.CancelSession(sessionID)
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
+			"status":        string(store.StatusCancelled),
+			"error_message": "任务已被管理员取消",
+			"finished_at":   store.TimeNowFmt(),
+			"finished_ts":   store.TimeNowMs(),
+		})
+		PublishStream(sessionID, harness.Notification{Method: "end"})
+		slog.Info("task cancelled just before execution", "task", taskID, "link", linkID)
+		return
+	}
+
 	// 兜底切换 session 的工作目录（session/new 已指定 cwd 时，这里是幂等确认，
 	// 不产生多余的「工作目录变更」消息）。
-	if err := q.ds.SetWorkingDirectory(sessionID, workDir); err != nil {
+	if err := ds.SetWorkingDirectory(sessionID, workDir); err != nil {
 		q.failTask(taskID, "设置工作目录失败: "+err.Error())
 		return
 	}
@@ -287,7 +355,7 @@ func (q *Queue) processItem(item *QueueItem) {
 	// 使「处理中重新打开会话记录」时 DB 已有部分 trace，snapshot 能拉到已产生的历史消息。
 	var lastPersist time.Time
 
-	result, err := q.ds.Run(sessionID, rendered, func(n harness.Notification) {
+	result, err := ds.Run(sessionID, rendered, func(n harness.Notification) {
 		PublishStream(sessionID, n)
 
 		// 从通知中提取 session event
@@ -358,9 +426,21 @@ func (q *Queue) processItem(item *QueueItem) {
 }
 
 func (q *Queue) ensureDSH() error {
-	if q.ds != nil {
+	q.dsMu.Lock()
+	defer q.dsMu.Unlock()
+
+	// 已存在且进程存活则直接复用；进程已崩溃（stdout 关闭、进程退出）则重建。
+	if q.ds != nil && q.ds.IsAlive() {
 		return nil
 	}
+
+	// 进程已死：关闭旧 client 释放资源，再重新启动（Bug #1）。
+	if q.ds != nil {
+		slog.Warn("dsh process exited unexpectedly, restarting", "task_affected", "recovering")
+		_ = q.ds.Close()
+		q.ds = nil
+	}
+
 	ds := harness.NewClient(q.cfg.LLM)
 	// 注入业务配置（token、回调地址等），供提示词中 $FILE_URL_TOKEN 等变量引用
 	ds.SetExtraEnv(BuildBusinessEnv(q.store.GetAllConfigPlain()))
@@ -377,7 +457,10 @@ func (q *Queue) DSH() (*harness.Client, error) {
 	if err := q.ensureDSH(); err != nil {
 		return nil, err
 	}
-	return q.ds, nil
+	q.dsMu.Lock()
+	ds := q.ds
+	q.dsMu.Unlock()
+	return ds, nil
 }
 
 func (q *Queue) failTask(taskID, errMsg string) {
@@ -496,8 +579,9 @@ func (q *Queue) GetPendingCount() int {
 	return len(q.pending)
 }
 
-// CancelTask 取消一个任务（支持 pending 和 processing）。
+// CancelTask 取消一个任务（支持 pending、inflight 过渡期和 processing）。
 //   - pending：直接从队列移除，返回 "pending"。
+//   - inflight：任务已从队列弹出但尚未注册 session，置取消标记，返回 "pending"。
 //   - processing：通过 session/cancel 通知中断正在执行的 SDK query，返回 "processing"。
 //   - 找不到可取消的任务时返回空字符串。
 func (q *Queue) CancelTask(taskID string) string {
@@ -509,15 +593,24 @@ func (q *Queue) CancelTask(taskID string) string {
 			"finished_at":   store.TimeNowFmt(),
 			"finished_ts":   store.TimeNowMs(),
 		})
-		if q.ds != nil {
-			if err := q.ds.CancelSession(sessionID.(string)); err != nil {
+		q.dsMu.Lock()
+		ds := q.ds
+		q.dsMu.Unlock()
+		if ds != nil {
+			if err := ds.CancelSession(sessionID.(string)); err != nil {
 				slog.Warn("cancel session failed", "task", taskID, "session", sessionID, "err", err)
 			}
 		}
 		return "processing"
 	}
 
-	// 2) 排队中的任务：从 pending 数组移除
+	// 2) inflight 过渡期：置取消标记，processItem 启动时会检查并直接标记 cancelled。
+	if _, ok := q.inflight.Load(taskID); ok {
+		q.inflight.Store(taskID, true)
+		return "pending"
+	}
+
+	// 3) 排队中的任务：从 pending 数组移除
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for i, it := range q.pending {
