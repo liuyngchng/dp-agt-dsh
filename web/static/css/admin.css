@@ -263,6 +263,9 @@ header p {
 .pwd-eye:hover {
     color: #4b6cb7;
 }
+.login-field .pwd-input-wrap input {
+    padding-right: 40px;
+}
 .pwd-hint {
     font-size: 0.75rem;
     color: #999;
@@ -364,12 +367,6 @@ header p {
 }
 
 /* 横向子 tab */
-.sub-tabs {
-    display: flex;
-    gap: 8px;
-    margin: 20px 0 24px;
-    border-bottom: 2px solid #eef1f6;
-}
 .sub-tab {
     background: transparent;
     border: none;
@@ -490,14 +487,6 @@ header p {
     font-family: inherit;
 }
 
-.form-g input:focus,
-.form-g textarea:focus,
-.form-g select:focus {
-    outline: none;
-    border-color: #4b6cb7;
-    box-shadow: 0 0 0 3px rgba(75, 108, 183, 0.12);
-}
-
 /* 覆盖浏览器自动填充（autofill）时的黄色背景，保持白色输入框 */
 .form-g input:-webkit-autofill,
 .form-g input:-webkit-autofill:hover,
@@ -507,38 +496,6 @@ header p {
     -webkit-text-fill-color: #333;
     caret-color: #333;
     transition: background-color 9999s ease-in-out 0s;
-}
-
-/* ---- 文件上传 input：统一“Browse”按钮样式 ---- */
-input[type="file"] {
-    font-size: 0.85rem;
-    color: #666;
-    padding: 8px 12px;
-    border: 2px dashed #cfd6e4;
-    border-radius: 8px;
-    background: #fafbfd;
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-}
-input[type="file"]:hover {
-    border-color: #4b6cb7;
-    background: #f2f5fb;
-}
-input[type="file"]::file-selector-button {
-    padding: 8px 16px;
-    margin-right: 12px;
-    border: none;
-    border-radius: 6px;
-    background: linear-gradient(135deg, #4b6cb7, #3a5a9e);
-    color: #fff;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-input[type="file"]::file-selector-button:hover {
-    background: linear-gradient(135deg, #3a5a9e, #2c487e);
-    box-shadow: 0 4px 12px rgba(75, 108, 183, 0.3);
 }
 
 /* 文件选择按钮（替代原生 Browse，显示中文） */
@@ -634,7 +591,7 @@ input[type="file"]::file-selector-button:hover {
     padding-left: 8px;
 }
 
-/* 会话工作目录文件浏览列表（复用提示词模板文件树的 .file-tree-row 等样式） */
+/* 会话文件浏览列表（复用提示词模板文件树的 .file-tree-row 等样式） */
 #sessionFilesList {
     max-height: 508px;
     overflow-y: auto;
@@ -642,6 +599,51 @@ input[type="file"]::file-selector-button:hover {
     border: 1px solid #e0e0e0;
     border-radius: 8px;
     background: #fff;
+}
+
+/* 上传文件选择框 */
+input[type="file"] {
+    padding: 9px 12px;
+    border: 2px dashed #c6cbd3;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: #555;
+    background: #fbfbfc;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+input[type="file"]:hover {
+    border-color: #4b6cb7;
+    background: #f4f7fc;
+}
+input[type="file"]::file-selector-button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #4b6cb7, #3a5a9e);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-right: 12px;
+    transition: all 0.2s;
+}
+input[type="file"]::file-selector-button:hover {
+    background: linear-gradient(135deg, #3a5a9e, #2c487e);
+    box-shadow: 0 4px 12px rgba(75, 108, 183, 0.3);
+}
+
+/* 统一 checkbox 颜色 */
+input[type="checkbox"] {
+    accent-color: #4b6cb7;
+}
+
+.form-g input:focus,
+.form-g textarea:focus,
+.form-g select:focus {
+    outline: none;
+    border-color: #4b6cb7;
+    box-shadow: 0 0 0 3px rgba(75, 108, 183, 0.12);
 }
 
 .form-g textarea {
@@ -706,7 +708,7 @@ input[type="file"]::file-selector-button:hover {
 .result-table tbody tr:hover { background: #f8f9fe; }
 .result-table tbody tr:last-child td { border-bottom: none; }
 
-/* 已配置 Key 表格的"值"列 — 限制宽度，超长省略，悬停看完整内容 */
+/* 已配置 Key 表格的“值”列 — 限制宽度，超长省略，悬停看完整内容 */
 .val-cell {
     max-width: 240px;
     white-space: nowrap;
@@ -777,11 +779,6 @@ input[type="file"]::file-selector-button:hover {
     background: #fff5f5;
 }
 
-/* 统一 checkbox 颜色 */
-input[type="checkbox"] {
-    accent-color: #4b6cb7;
-}
-
 /* 状态徽章 */
 .badge {
     padding: 3px 10px;
@@ -794,6 +791,7 @@ input[type="checkbox"] {
 .badge-success       { background: #c6f6d5; color: #276749; }
 .badge-completed     { background: #c6f6d5; color: #276749; }
 .badge-failed        { background: #fed7d7; color: #9b2c2c; }
+.badge-callback_fail { background: #fed7d7; color: #9b2c2c; }
 .badge-cancelled     { background: #e2e8f0; color: #4a5568; }
 
 /* ---- 模态框 ---- */
@@ -827,25 +825,6 @@ input[type="checkbox"] {
     gap: 8px;
 }
 
-/* “执行过程”、”执行结果”、”任务执行时间线”、”提示词模板预览”、”记忆文件预览” 窗口 — 固定宽度/高度 */
-#streamModal .modal-lg,
-#taskModal .modal-lg,
-#auditDetailModal .modal-lg,
-#promptPreviewModal .modal-lg,
-#memoryModal .modal-lg,
-#traceModal .modal-lg {
-    width: min(1280px, calc(100vw - 40px));
-    height: 90vh;
-    overflow: hidden;
-}
-
-.modal-actions {
-    display: flex;
-    gap: 12px;
-    margin-top: 24px;
-    justify-content: flex-end;
-}
-
 /* 小模态框（添加配置项等简单表单） */
 .modal-sm {
     background: #fff;
@@ -865,6 +844,54 @@ input[type="checkbox"] {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* “会话终端”、”执行过程”、”执行结果”、”任务执行时间线”、”提示词模板预览”、”记忆文件预览” 窗口 — 固定高度 */
+#chatModal .modal-lg,
+#streamModal .modal-lg,
+#taskModal .modal-lg,
+#auditDetailModal .modal-lg,
+#promptPreviewModal .modal-lg,
+#memoryModal .modal-lg,
+#sessionFilePreviewModal .modal-lg,
+#traceModal .modal-lg {
+    width: min(1280px, calc(100vw - 40px));
+    height: 90vh;
+    overflow: hidden;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+    justify-content: flex-end;
+}
+
+/* 系统变量配置：左右两栏（单条添加 / CSV 批量导入） */
+.cfg-two-col {
+    display: flex;
+    gap: 16px;
+    align-items: stretch;
+}
+.cfg-col {
+    flex: 1;
+    min-width: 0;
+    padding: 18px 20px;
+    background: #f5f7fa;
+    border: 1px solid #e6eaf0;
+    border-radius: 10px;
+}
+.cfg-col-title {
+    margin: 0 0 14px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #2c3e50;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+@media (max-width: 720px) {
+    .cfg-two-col { flex-direction: column; }
 }
 
 /* ---- 任务详情 ---- */

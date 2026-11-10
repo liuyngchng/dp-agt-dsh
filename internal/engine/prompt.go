@@ -13,8 +13,8 @@ import (
 
 // PromptFile 提示词文件
 type PromptFile struct {
-	Filename string // 相对路径，如 "doc/classify.md"
-	Path     string // 访问路径，如 "doc/classify"
+	Filename string // 相对路径，如 "doc/start.md"
+	Path     string // 访问路径，如 "doc/start"
 	Name     string // 从文件中提取的标题
 	Content  string // 文件内容
 }
@@ -55,7 +55,7 @@ func walk(dir, prefix string, m map[string]*PromptFile, list *[]PromptFile) {
 		if entry.IsDir() {
 			walk(full, rel+"/", m, list)
 		} else if strings.HasSuffix(name, ".md") {
-			relPath := strings.TrimSuffix(rel, ".md") // doc/classify
+			relPath := strings.TrimSuffix(rel, ".md") // doc/start
 			baseName := strings.TrimSuffix(name, ".md")
 			if baseName == "claude-md" {
 				continue

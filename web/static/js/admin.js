@@ -211,6 +211,35 @@ async function deleteConfigItem(key) {
     toast('已删除');
 }
 
+// 复制文本到剪贴板：优先异步 API，失败时回退到 execCommand
+async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        try { await navigator.clipboard.writeText(text); return true; } catch {}
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px'; ta.style.top = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+    return ok;
+}
+
+// 复制全部系统变量（key=value 逐行）
+async function copyAllConfigKeys() {
+    try {
+        const rr = await fetch(API + '/prompt-config?reveal=1');
+        const rj = await rr.json();
+        const rrows = (rj.data && rj.data.rows) || [];
+        if (rrows.length === 0) return toast('暂无配置项', 'error');
+        const text = rrows.map(r => r.key + '=' + r.value).join('\n');
+        const ok = await copyText(text);
+        toast(ok ? '已复制全部 ' + rrows.length + ' 项' : '复制失败', ok ? 'success' : 'error');
+    } catch (err) {
+        toast('复制失败: ' + err.message, 'error');
+    }
+}
+
 // 加载配置 key 列表
 async function loadConfigKeys() {
     const res = await fetch(API + '/prompt-config');
@@ -240,22 +269,35 @@ async function loadConfigKeys() {
         const key = escHtml(r.key);
         const note = escHtml(r.note || '-');
         const uid = 'val-' + idx;
-        const delBtn = '<button class="cfg-btn-sm del-btn" data-key="' + key + '" title="删除"><i class="fas fa-trash"></i></button>';
+        const delBtn = '<button class="cfg-btn-sm del-btn" data-key="' + key + '" title="删除"><i class="fas fa-trash-alt"></i></button>';
+        const copyBtn = '<button class="cfg-btn-sm copy-btn" data-key="' + key + '" data-idx="' + idx + '" title="复制值"><i class="fas fa-copy"></i></button>';
         if (r.is_secret) {
             html += '<tr><td><code>' + key + '</code></td>'
                 + '<td class="val-cell"><span class="val-text" id="' + uid + '" title="' + escHtml(r.value) + '">' + escHtml(r.value) + '</span> '
                 + '<button class="cfg-btn-sm eye-btn" data-idx="' + idx + '" data-key="' + key + '"><i class="fas fa-eye"></i></button></td>'
                 + '<td>' + note + '</td>'
-                + '<td>' + delBtn + '</td></tr>';
+                + '<td>' + copyBtn + ' ' + delBtn + '</td></tr>';
         } else {
             html += '<tr><td><code>' + key + '</code></td>'
                 + '<td class="val-cell"><span class="val-text" title="' + escHtml(r.value) + '">' + escHtml(r.value) + '</span></td>'
                 + '<td>' + note + '</td>'
-                + '<td>' + delBtn + '</td></tr>';
+                + '<td>' + copyBtn + ' ' + delBtn + '</td></tr>';
         }
     });
     html += '</tbody></table>';
     if (table) table.innerHTML = html;
+
+    // 事件委托：复制按钮
+    if (table) table.querySelectorAll('.copy-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const idx = parseInt(this.dataset.idx);
+            const key = this.dataset.key;
+            const plain = (revealMap[key] !== undefined ? revealMap[key] : (rows[idx] && rows[idx].value)) || '';
+            copyText(plain).then(ok => {
+                toast(ok ? '已复制 ' + key : '复制失败', ok ? 'success' : 'error');
+            });
+        });
+    });
 
     // 事件委托：眼睛按钮
     if (table) table.querySelectorAll('.eye-btn').forEach(btn => {
@@ -560,8 +602,12 @@ function renderTasksPage(list) {
         const taskId = escHtml(t.task_id);
         const title = t.title || '-';
         const titleDisplay = title.length > 20 ? escHtml(title.substring(0, 20)) + '...' : escHtml(title);
-        // 会话记录按钮（主行）
-        const viewBtn = `<button class="cfg-btn-sm cfg-btn-icon cfg-btn-icon-primary" onclick="viewSession('${escHtml(t.session_id || '')}', '${taskId}', '${escHtml(t.status || '')}')" title="会话记录"><i class="fas fa-comments"></i></button>`;
+        // 会话记录按钮（主行）：仅 session 仍 active 时可点；已关闭/无 session 时置灰。
+        const hasSession = !!t.session_id;
+        const sessionOpen = hasSession && t.session_status === 'active';
+        const viewBtn = sessionOpen
+            ? `<button class="cfg-btn-sm cfg-btn-icon cfg-btn-icon-primary" onclick="viewSession('${escHtml(t.session_id)}', '${taskId}', '${escHtml(t.status || '')}')" title="会话记录"><i class="fas fa-comments"></i></button>`
+            : `<button class="cfg-btn-sm cfg-btn-icon" disabled title="${hasSession ? '会话已关闭' : '无会话记录'}"><i class="fas fa-comments"></i></button>`;
         // 停止按钮：仅排队中/处理中可用（移到展开详情行）
         const canStop = t.status === 'pending' || t.status === 'processing';
         const stopBtn = canStop
@@ -711,6 +757,12 @@ document.addEventListener('keydown', function(e) {
         if (document.getElementById('promptPreviewModal').classList.contains('show')) closePromptPreview();
         if (document.getElementById('cfgModal').classList.contains('show')) closeCfgModal();
         if (document.getElementById('traceModal').classList.contains('show')) closeTraceModal();
+    }
+    // 配置弹窗内按回车提交
+    if (e.key === 'Enter' && document.getElementById('cfgModal').classList.contains('show')
+        && ['cfgKeyInput', 'cfgValueInput', 'cfgNoteInput'].includes(e.target.id)) {
+        e.preventDefault();
+        addConfigItem();
     }
 });
 
@@ -1366,7 +1418,12 @@ async function deleteUser(username) {
 // ==== 任务审查 ====
 function closeAuditDetail() {
     _auditDetailData = null;
+    _linkTimelineData = null;
     document.getElementById('auditDetailModal').classList.remove('show');
+    // 恢复默认标题与导出按钮
+    document.querySelector('#auditDetailModal h3 span').innerHTML = '<i class="fas fa-history"></i> 任务执行时间线';
+    const mdBtn = document.getElementById('linkTimelineExportMdBtn');
+    if (mdBtn) mdBtn.style.display = 'none';
 }
 
 const AUDIT_PAGE_SIZE = 10;
@@ -1597,7 +1654,7 @@ function renderSessionFileTree(node, prefix) {
         const isMd = f.name.toLowerCase().endsWith('.md');
         const previewBtn = isMd
             ? '<button class="cfg-btn-sm cfg-btn-icon cfg-btn-icon-primary" onclick="previewSessionFile(\'' + escJs(f.relPath) + '\')" title="预览" style="flex-shrink:0;"><i class="fas fa-eye"></i></button>'
-            : '';
+            : '<button class="cfg-btn-sm cfg-btn-icon" style="visibility:hidden;flex-shrink:0;pointer-events:none;" tabindex="-1"><i class="fas fa-eye"></i></button>';
         html +=
             '<div class="file-tree-row file-tree-file-row" title="' + escHtml(f.relPath) + '">' +
                 icon +
@@ -1686,6 +1743,9 @@ async function viewLinkTimeline(linkid) {
         _linkTimelineData = json.data;
         document.getElementById('auditDetailContent').innerHTML = linkTimelineHtml(json.data);
         document.getElementById('auditDetailModal').classList.add('show');
+        // 切换弹窗标题，并显示 MD 导出按钮
+        document.querySelector('#auditDetailModal h3 span').innerHTML = '<i class="fas fa-history"></i> 会话处理时间线';
+        document.getElementById('linkTimelineExportMdBtn').style.display = '';
     } catch (err) {
         toast('加载时间线失败: ' + err.message, 'error');
     }
@@ -2187,8 +2247,11 @@ async function viewAuditDetail(taskId) {
         const t = json.data;
         if (!t) return toast('未找到', 'error');
         _auditDetailData = t;
+        _linkTimelineData = null;
         document.getElementById('auditDetailContent').innerHTML = auditTimelineHtml(t);
         document.getElementById('auditDetailModal').classList.add('show');
+        document.querySelector('#auditDetailModal h3 span').innerHTML = '<i class="fas fa-history"></i> 任务执行时间线';
+        document.getElementById('linkTimelineExportMdBtn').style.display = 'none';
     } catch (err) { toast('加载详情失败: ' + err.message, 'error'); }
 }
 
@@ -2342,6 +2405,10 @@ function extractCallbackPayload(cmd) {
 }
 
 function exportAuditMd() {
+    // 会话处理时间线模式：复用 exportLinkTimeline 导出
+    if (_linkTimelineData) {
+        return exportLinkTimeline('html');
+    }
     const t = _auditDetailData;
     if (!t) return toast('无数据', 'error');
     const linkid = t.linkid || t.task_id?.substring(0, 8) || 'export';

@@ -1,6 +1,6 @@
 # 发文审核任务
 
-你需要对一篇发文进行全面的审核把关。以下是请求信息：
+你需要对一篇待发布的公文进行全面的内容审核把关。以下是请求信息：
 
 ```json
 {{request.body}}
@@ -8,6 +8,9 @@
 
 ## 请求结构说明
 
+- `linkid` / `target` / `deptid`：公文与处理人身份信息，需原样透传到结果
+- `targetName` / `deptFullPath`：处理人姓名 / 部门完整路径，若输入提供则原样透传
+- `workflow_id` / `current_stepid` / `current_step`：流程标识信息，需原样透传到结果（`workflow_id` 缺省固定为 `00000000-0000-0000-0000-000000000000`）
 - `form_data`: 表单元数据（标题、文种、紧急程度、密级、主送机关等）
 - `files`: 文件数组，其中 `file_type` = `"main_body"` 的是正文（.docx），其余为附件
 - `approval_history`: 审批流转记录（含各部门会签意见）
@@ -24,9 +27,9 @@
 - 对正文（`file_type` = `"main_body"`）调用文档解析服务，获取纯文本
 - 对附件也调用文档解析服务，用于步骤 5 中核对附件名称
 
-### 步骤 3：提交 rdCLI 自动核稿（体例格式）
-- rdCLI 审稿服务只接受 `.docx`。先判断正文格式：若正文是旧版 `.doc`（依据文件扩展名或文件头 magic bytes `D0 CF 11 E0` 判断），先调用文档格式转换服务 `/convert/doc` 转为 `.docx`（见 CLAUDE.md 中的「文档格式转换」章节），再用转换后的 `.docx` 提交；若正文本身已是 `.docx`，直接使用。
-- 将正文 .docx 文件提交到 rdCLI 审稿服务（见 CLAUDE.md 中的调用说明）
+### 步骤 3：提交 `rdCLI` 自动核稿（体例格式）
+- `rdCLI` 审稿服务只接受 `.docx`。先判断正文格式：若正文是旧版 `.doc`（依据文件扩展名或文件头 magic bytes `D0 CF 11 E0` 判断），先调用文档格式转换服务 `/convert/doc` 转为 `.docx`（见 `CLAUDE.md` 中的「文档格式转换」章节），再用转换后的 `.docx` 提交；若正文本身已是 `.docx`，直接使用。
+- 将正文 `.docx` 文件提交到 `rdCLI` 审稿服务（见 `CLAUDE.md` 中的调用说明）
 - `additional_instructions` 设为 `"请严格按 GB/T 9704-2012 党政机关公文格式标准进行全面校对，重点关注：发文字号、标题层级、主送机关、正文结构、附件说明格式、落款（成文日期、印章）、专用语规范。仅输出有问题的项目，如果某类别无问题则无需列出。"`
 - 通过轮询 `GET /api/proofread/task?id=<taskId>` 获取结果
 - 每次轮询间隔 15 秒，最多等待 5 分钟
@@ -54,29 +57,37 @@
 
 ### 步骤 5：汇总生成审核报告
 
-将步骤 3（rdCLI 体例格式校对）和步骤 4（Agent 政策/内容/程序审核）的结果汇总为一份完整的 Markdown 审核报告。
+将步骤 3（`rdCLI` 体例格式校对）和步骤 4（Agent 政策/内容/程序审核）的结果汇总为一份完整的 Markdown 审核报告。
 
 ### 步骤 6：执行结果回调
 
-前置检查：若系统提示（CLAUDE.md）中**没有**「结果回调」章节，或环境变量 `${DP_CALLBACK_URL}` 为空，说明回调地址未配置。此时**立即停止**，严禁从数据库、源码、日志、配置文件或历史会话中查找/猜测回调地址；跳过回调步骤，并把输出 JSON 中的 `need_human` 设为 `true`。回调地址已配置时才继续执行下方回调。
+前置检查：若系统提示（`CLAUDE.md`）中**没有**「结果回调」章节，或环境变量 `${DP_CALLBACK_URL}` 为空，说明回调地址未配置。此时**立即停止**，严禁从数据库、源码、日志、配置文件或历史会话中查找/猜测回调地址；跳过回调步骤，并把输出 `JSON` 中的 `need_human` 设为 `true`。回调地址已配置时才继续执行下方回调。
 
 重要参数：
 - 当前任务 task_id: `{{task_id}}`
 - 本次请求 linkid: `{{request.linkid}}`
 
-在输出最终 JSON 之前，**必须**先执行结果回调。回调 payload 的 `data` 字段，就是下方「输出要求」中定义的 JSON 结果（步骤 5 构建完成后填入）。
+在输出最终 `JSON` 之前，**必须**先执行结果回调。回调 payload 的 `data` 字段，就是下方「输出要求」中定义的 `JSON` 结果（步骤 5 构建完成后填入）。
 回调的具体 curl 命令模板见系统提示（CLAUDE.md）中的「结果回调」章节，直接照做即可。
 回调 payload 中的 task_id 和 linkid 必须使用上面给出的准确值。
 
-回调成功（HTTP 2xx）后再输出下面的 JSON。回调失败重试最多 3 次（间隔 2/4/8 秒），
+回调成功（HTTP 2xx）后再输出下面的 `JSON`。回调失败重试最多 3 次（间隔 2/4/8 秒），
 仍失败则在 JSON 的 `fail_reason` 中补充「结果回调失败：<错误信息>」并将 `need_human` 设为 `true`。
 
 ## 输出要求
 
-请按以下 JSON Schema 输出最终结果，用 ```json 代码块包裹：
+请按以下 `JSON` Schema 输出最终结果，用 ```json 代码块包裹：
 
 ```json
 {
+  "linkid": "<linkid>",
+  "target": "exampleDomain\\exampleUser",
+  "targetName": "张三",
+  "deptid": "<deptid>",
+  "deptFullPath": "某分公司-某部门",
+  "workflow_id": "00000000-0000-0000-0000-000000000000",
+  "current_stepid": "<current_stepid>",
+  "current_step": "<current_step>",
   "audit_result": "warning",
   "result_text": "## 发文审核报告\n\n**审核时间**: 2026-01-15\n**标题**: xx公司关于xx的通知\n\n---\n\n### 一、政策与合规审核\n\n#### 1.1 发文必要性\n该文涉及...确有必要发文。\n\n#### 1.2 文种选用\n使用\"通知\"文种，符合...\n\n...\n\n### 二、内容与逻辑审核\n\n...\n\n### 三、体例格式审核\n\n（以下为 rdCLI 自动核稿意见）\n\n#### 3.1 错别字\n...\n\n### 四、程序与附件审核\n\n...\n\n### 五、审核结论\n\n> 共发现 xx 个问题（严重 yy 项、一般 zz 项、提示 ww 项）。建议...",
   "issues_count": 5,
@@ -95,6 +106,7 @@
 
 ## 注意事项
 - 所有文本内容（`result_text`）必须使用简体中文
+- 凡输入 `JSON` 中已有的同名字段（`linkid`、`target`、`targetName`、`deptid`、`deptFullPath`、`workflow_id`、`current_stepid`、`current_step`），一律原样透传，不要改动值
 - `result_text` 中的 Markdown 要规范，使用 ## 作为一级标题、### 作为二级标题、**加粗**用于强调
-- rdCLI 核稿意见原样保留到 `result_text` 的"体例格式审核"章节中，不要改写
+- `rdCLI` 核稿意见原样保留到 `result_text` 的"体例格式审核"章节中，不要改写
 - 如果某维度未发现问题，在报告中写"未发现问题"即可，不要留空

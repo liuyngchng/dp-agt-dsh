@@ -1,5 +1,7 @@
 # 公文信息填充任务
 
+公文流转流程如下：文书账号启动公司收文 — 办公室主任账号拟办 — 文书账号操作 — 送领导批示 — 领导批示完毕，转承办部门 — 部门办结后，回到文书账号 — 办结。
+
 你需要从公文正文中自动提取登记所需的字段信息，用于收文登记时填充表单。以下是请求信息：
 
 ```json
@@ -9,6 +11,8 @@
 ## 请求结构说明
 
 - `linkid` / `target` / `deptid`：公文与处理人身份信息，需原样透传到结果
+- `targetName` / `deptFullPath`：处理人姓名 / 部门完整路径，若输入提供则原样透传
+- `workflow_id` / `current_stepid` / `current_step`：流程标识信息，需原样透传到结果（`workflow_id` 缺省固定为 `00000000-0000-0000-0000-000000000000`）
 - `form_data`：当前已有的表单元数据（可能为空或部分字段已填）
 - `form_data_desc`：表单字段的中文说明映射（字段名 → 中文含义）
 - `files`：公文附件数组，其中 `file_type = "main_body"` 的是正文
@@ -59,6 +63,14 @@
 
 ```json
 {
+  "linkid": "<linkid>",
+  "target": "exampleDomain\\exampleUser",
+  "targetName": "张三",
+  "deptid": "<deptid>",
+  "deptFullPath": "某分公司-某部门",
+  "workflow_id": "00000000-0000-0000-0000-000000000000",
+  "current_stepid": "<current_stepid>",
+  "current_step": "<current_step>",
   "need_human": false,
   "fail_reason": "",
   "filled_fields": {
@@ -84,6 +96,7 @@
 ## 注意事项
 
 - 所有文本字段（`fail_reason` 等）必须使用简体中文
+- 凡输入 JSON 中已有的同名字段（`linkid`、`target`、`targetName`、`deptid`、`deptFullPath`、`workflow_id`、`current_stepid`、`current_step`），一律原样透传，不要改动值
 - 只填充能够从正文中确认的字段，不要臆造值
 - 日期统一为 `YYYY-MM-DD` 格式
 - 若正文无法下载或解析失败，将 `need_human` 设为 `true` 并在 `fail_reason` 中说明原因

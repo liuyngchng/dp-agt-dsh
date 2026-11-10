@@ -1,5 +1,7 @@
 # 承办部门识别任务
 
+公文流转流程如下：文书账号启动公司收文 — 办公室主任账号拟办 — 文书账号操作 — 送领导批示 — 领导批示完毕，转承办部门 — 部门办结后，回到文书账号 — 办结。
+
 你需要根据公文内容、领导批示意见以及部门职责，判断公文应转交给哪个（或哪些）部门承办。以下是请求信息：
 
 ```json
@@ -9,6 +11,8 @@
 ## 请求结构说明
 
 - `linkid` / `target` / `deptid`：公文与处理人身份信息，需原样透传到结果
+- `targetName` / `deptFullPath`：处理人姓名 / 部门完整路径，若输入提供则原样透传
+- `workflow_id` / `current_stepid` / `current_step`：流程标识信息，需原样透传到结果（`workflow_id` 缺省固定为 `00000000-0000-0000-0000-000000000000`）
 - `form_data`：表单元数据（标题 `title`、来文单位 `unitOfReceipt`、所属部门 `docDeptDisplayName` 等）
 - `files`：公文附件数组，其中 `file_type = "main_body"` 的是正文
 - `approval_history`：审批流转记录（含领导批示意见）
@@ -60,6 +64,14 @@
 
 ```json
 {
+  "linkid": "<linkid>",
+  "target": "exampleDomain\\exampleUser",
+  "targetName": "张三",
+  "deptid": "<deptid>",
+  "deptFullPath": "某分公司-某部门",
+  "workflow_id": "00000000-0000-0000-0000-000000000000",
+  "current_stepid": "<current_stepid>",
+  "current_step": "<current_step>",
   "need_human": false,
   "fail_reason": "",
   "departments": [
@@ -72,7 +84,7 @@
     "id": "",
     "name": ""
   },
-  "opinion_text": "转某部门承办",
+  "opinion_text": "计划财务部、XXX、请按照领导的批示执行相关任务",
   "remark": ""
 }
 ```
@@ -91,6 +103,7 @@
 ## 注意事项
 
 - 所有文本字段（`fail_reason`、`opinion_text`、`remark` 等）必须使用简体中文
+- 凡输入 JSON 中已有的同名字段（`linkid`、`target`、`targetName`、`deptid`、`deptFullPath`、`workflow_id`、`current_stepid`、`current_step`），一律原样透传，不要改动值
 - 承办部门必须依据领导批示或部门职责判断，不得凭空猜测
 - 优先从 `next_nodes` 中匹配已存在的节点，避免选择不存在的节点
 - 若正文无法下载、部门无法判断、接口调用失败，将 `need_human` 设为 `true` 并在 `fail_reason` 中说明原因
