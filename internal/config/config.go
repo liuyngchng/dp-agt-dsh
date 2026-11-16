@@ -31,16 +31,16 @@ type SysConfig struct {
 }
 
 type LLMConfig struct {
-	BaseURL                   string `yaml:"base_url"`
-	AuthToken                 string `yaml:"auth_token"`
-	Model                     string `yaml:"model"`
-	TimeoutMs                 int    `yaml:"timeout_ms"`
+	BaseURL                    string `yaml:"base_url"`
+	AuthToken                  string `yaml:"auth_token"`
+	Model                      string `yaml:"model"`
+	TimeoutMs                  int    `yaml:"timeout_ms"`
 	DisableNonessentialTraffic bool   `yaml:"disable_nonessential_traffic"`
 
 	// dsh 内部字段（不从 yaml 读取）
-	Provider    string `yaml:"-"` // deepseek-official
-	DSHome      string `yaml:"-"` // dsh 运行时 home 目录
-	RuntimeDir  string `yaml:"-"` // dsh 子进程进程级工作目录（initialize.cwd）
+	Provider   string `yaml:"-"` // deepseek-official
+	DSHome     string `yaml:"-"` // dsh 运行时 home 目录
+	RuntimeDir string `yaml:"-"` // dsh 子进程进程级工作目录（initialize.cwd）
 }
 
 // RawConfig 用于获取 cfg.yml 的原始 map 供 CLAUDE.md 模板渲染
@@ -155,6 +155,20 @@ func (c *Config) RuntimeTasksDir() string {
 	return filepath.Join(filepath.Dir(abs), "runtime", "tasks")
 }
 
+// AssetsDir 返回镜像内置静态资源目录（cfg.csv.template / mock.json 等种子资源）。
+// 该目录不打进 data 挂载卷，因此宿主机挂载 $DATA_DIR 后资源仍可见。
+// 容器内为 /app/assets；本地运行时回退到项目根下的 assets/（相对进程 cwd）。
+func (c *Config) AssetsDir() string {
+	if dir := strings.TrimSpace(os.Getenv("ASSETS_DIR")); dir != "" {
+		return dir
+	}
+	abs, err := filepath.Abs(c.Sys.DataDir)
+	if err != nil {
+		abs = c.Sys.DataDir
+	}
+	return filepath.Join(filepath.Dir(abs), "assets")
+}
+
 // DSHRuntimeDir 返回 dsh 子进程的进程级兜底工作目录（Session 诞生时的初始 cwd）。
 // 它一定存在且可读写，仅作为 session 创建后再切换到真实会话目录之前的过渡目录。
 func (c *Config) DSHRuntimeDir() string {
@@ -178,9 +192,9 @@ func (c *Config) RawConfig() map[string]interface{} {
 			"retention_days":       c.Sys.RetentionDays,
 		},
 		"llm": map[string]interface{}{
-			"base_url":  c.LLM.BaseURL,
-			"model":     c.LLM.Model,
-			"provider":  c.LLM.Provider,
+			"base_url": c.LLM.BaseURL,
+			"model":    c.LLM.Model,
+			"provider": c.LLM.Provider,
 		},
 	}
 }

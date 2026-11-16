@@ -71,7 +71,9 @@ RUN mkdir -p /app/runtime/tasks && chmod 0777 /app/runtime /app/runtime/tasks
 
 # 复制配置模板
 COPY data/cfg.yml.template /app/data/cfg.yml.template
-COPY data/cfg.csv.template /app/data/cfg.csv.template
+
+# 静态种子资源（第 2 类：cfg.csv.template / mock.json 随镜像打进 /app/assets，不依赖宿主机挂载）
+COPY data/cfg.csv.template data/mock.json /app/assets/
 
 EXPOSE 20002
 

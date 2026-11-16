@@ -29,11 +29,7 @@ if [ ! -f "$DATA_DIR/cfg.yml" ]; then
   fi
 fi
 
-echo "=== check cfg.csv.template ==="
-if [ ! -f "$DATA_DIR/cfg.csv.template" ]; then
-  cp "$PROJECT_ROOT/data/cfg.csv.template" "$DATA_DIR/cfg.csv.template" 2>/dev/null || true
-  echo "[deploy] cfg.csv.template 已复制到数据目录"
-fi
+echo "[deploy] cfg.csv.template / mock.json 等种子资源在容器内 /app/assets，无需复制"
 
 echo "=== ensure network exists ==="
 if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then

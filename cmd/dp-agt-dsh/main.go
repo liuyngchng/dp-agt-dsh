@@ -156,7 +156,7 @@ func main() {
 		}
 	})
 
-	// Mock 数据
+	// 模拟数据（预填样本）
 	adminMux.HandleFunc("/admin/mock", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			ah.HandleMock(w, r)

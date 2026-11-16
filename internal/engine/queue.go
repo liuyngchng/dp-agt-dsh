@@ -270,24 +270,6 @@ func (q *Queue) processItem(item *QueueItem) {
 		return
 	}
 
-	// mock 模式：检查是否显式 mock（callback_url == "mock" 或 body 有 is_mock）
-	isMock, _ := item.Body["callback_url"].(string)
-	isMockFlag, _ := item.Body["is_mock"].(bool)
-	if isMock == "mock" || isMockFlag {
-		// mock 模式也记录一个 session，保证前端「会话记录」「会话管理」可见。
-		_ = q.store.UpsertSession(sessionID, linkID)
-		slog.Info("mock", "task", taskID, "path", item.Path, "prompt_rendered_bytes", len(rendered))
-		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
-			"status":      string(store.StatusCompleted),
-			"session_id":  sessionID,
-			"sdk_output":  `{"note": "mock mode - dsh not invoked"}`,
-			"finished_at": store.TimeNowFmt(),
-			"finished_ts": store.TimeNowMs(),
-		})
-		_ = q.store.UpsertSdkTrace(taskID, "[]")
-		return
-	}
-
 	// 启动 dsh
 	if err := q.ensureDSH(); err != nil {
 		q.failTask(taskID, "启动 dsh 运行时失败: "+err.Error())

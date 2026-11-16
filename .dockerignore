@@ -5,12 +5,12 @@
 dp-agt-dsh
 
 # 运行时数据（容器挂载卷，不进镜像）
+# cfg.csv.template / mock.json 为静态种子资源，随镜像打进 /app/assets（第 2 类）
 data/*.db
 data/*.db-shm
 data/*.db-wal
 data/secrets.key
 data/cfg.yml
-data/mock.json
 data/logs/
 data/tasks/
 data/dsh-home/

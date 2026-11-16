@@ -40,13 +40,27 @@ func (h *AdminHandler) sessionWorkDir(session *store.Session) string {
 	return engine.SessionWorkDir(h.cfg.RuntimeTasksDir(), session.SessionID)
 }
 
-// ── Mock 数据 ──
+// ── 模拟数据（预填样本，非 mock 执行模式）──
 
 func (h *AdminHandler) HandleMock(w http.ResponseWriter, r *http.Request) {
-	mockFile := filepath.Join(h.cfg.Sys.DataDir, "mock.json")
+	mockPaths := []string{
+		filepath.Join(h.cfg.AssetsDir(), "mock.json"), // Docker 镜像（第2类资源，不挂载）
+		filepath.Join(h.cfg.Sys.DataDir, "mock.json"), // 开发模式兼容
+	}
+	var mockFile string
+	for _, p := range mockPaths {
+		if _, err := os.Stat(p); err == nil {
+			mockFile = p
+			break
+		}
+	}
+	if mockFile == "" {
+		writeJSON(w, http.StatusNotFound, resp(1001, "mock.json 不存在", "", "", nil))
+		return
+	}
 	data, err := os.ReadFile(mockFile)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, resp(1001, "mock.json 不存在", "", "", nil))
+		writeJSON(w, http.StatusNotFound, resp(1001, "mock.json 读取失败", "", "", nil))
 		return
 	}
 	var parsed interface{}
@@ -151,9 +165,6 @@ func (h *AdminHandler) HandleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := payload["linkid"]; !ok {
 		payload["linkid"] = "mock-" + newToken()[:8]
-	}
-	if _, ok := payload["callback_url"]; !ok {
-		payload["callback_url"] = "mock"
 	}
 
 	// 走与 /api/v1/:path 相同的提交逻辑
@@ -858,7 +869,8 @@ func (h *AdminHandler) HandlePromptConfig(w http.ResponseWriter, r *http.Request
 func (h *AdminHandler) HandlePromptConfigTemplate(w http.ResponseWriter, r *http.Request) {
 	csv := ""
 	templatePaths := []string{
-		filepath.Join(h.cfg.Sys.DataDir, "cfg.csv.template"),
+		filepath.Join(h.cfg.AssetsDir(), "cfg.csv.template"), // Docker 镜像（第2类资源）
+		filepath.Join(h.cfg.Sys.DataDir, "cfg.csv.template"), // 开发模式兼容
 		"cfg.csv.template",
 	}
 	for _, p := range templatePaths {
@@ -1022,17 +1034,17 @@ func (h *AdminHandler) HandleDataTables(w http.ResponseWriter, r *http.Request) 
 	tables := []map[string]interface{}{
 		{
 			"id": "sessions", "label": "会话表（sessions）",
-			"note": "会话与 linkid 的映射，删除后同一 linkid 再提交会新建会话",
+			"note":  "会话与 linkid 的映射，删除后同一 linkid 再提交会新建会话",
 			"count": h.store.CountSessions(),
 		},
 		{
 			"id": "task_logs", "label": "任务日志表（task_logs）",
-			"note": "任务执行记录、时间线等审计数据（不含 sdk_trace）",
+			"note":  "任务执行记录、时间线等审计数据（不含 sdk_trace）",
 			"count": h.store.CountTasks(),
 		},
 		{
 			"id": "sdk_traces", "label": "SDK Trace 表（sdk_traces）",
-			"note": "Agent SDK 全量消息流 JSON，体积大，独立存储",
+			"note":  "Agent SDK 全量消息流 JSON，体积大，独立存储",
 			"count": h.store.CountSdkTraces(),
 		},
 	}
