@@ -131,6 +131,15 @@ func (q *Queue) TryEnqueue(iface *store.AgentInterface, body map[string]interfac
 	item = &QueueItem{TaskID: taskID, Path: iface.Path, Iface: iface, Body: body}
 	q.pending = append(q.pending, item)
 
+	// 入队快照：记录提交瞬间的并发槽位占用，用于定位「排队中」是否由槽位满导致。
+	slog.Info("enqueue_snapshot",
+		"task", taskID,
+		"link", linkID,
+		"running", q.running,
+		"pending", len(q.pending),
+		"max_concurrent_tasks", q.cfg.Sys.MaxConcurrentTasks,
+		"max_pending_tasks", q.cfg.Sys.MaxPendingTasks)
+
 	return 0, "success", item
 }
 
@@ -268,6 +277,21 @@ func (q *Queue) pump() {
 		}(item)
 
 		q.mu.Lock()
+	}
+
+	// 出队循环结束后仍有任务停留在 pending：说明并发槽位已满（running >= max_concurrent_tasks），
+	// 这些任务需等待某个 running 任务结束后再次触发 pump 才能执行。
+	if len(q.pending) > 0 {
+		queued := make([]string, 0, len(q.pending))
+		for _, it := range q.pending {
+			queued = append(queued, it.TaskID)
+		}
+		slog.Info("task queued: no free concurrent slot",
+			"queued_tasks", queued,
+			"running", q.running,
+			"pending", len(q.pending),
+			"max_concurrent_tasks", q.cfg.Sys.MaxConcurrentTasks,
+			"max_pending_tasks", q.cfg.Sys.MaxPendingTasks)
 	}
 	q.mu.Unlock()
 }
