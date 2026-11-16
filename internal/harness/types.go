@@ -1,5 +1,7 @@
 package harness
 
+import "fmt"
+
 // DSH SDK JSON-RPC 协议类型定义。
 // 协议: newline-delimited JSON-RPC 2.0 over stdio
 
@@ -167,6 +169,35 @@ func FinishReason(events []SessionEvent) string {
 		if kind, ok := reason["kind"].(string); ok {
 			return kind
 		}
+	}
+	return ""
+}
+
+// TurnEndError 从 events 中提取最后一个 turn/end 的错误信息（reason.kind == "error" 时）。
+// 返回空字符串表示 turn/end 不是错误结束。
+func TurnEndError(events []SessionEvent) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != "turn/end" {
+			continue
+		}
+		reason, ok := events[i].Data["reason"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if kind, _ := reason["kind"].(string); kind != "error" {
+			return ""
+		}
+		if errObj, ok := reason["error"].(map[string]interface{}); ok {
+			code, _ := errObj["code"].(string)
+			message, _ := errObj["message"].(string)
+			if message != "" {
+				if code != "" {
+					return fmt.Sprintf("%s: %s", code, message)
+				}
+				return message
+			}
+		}
+		return "turn ended with error (no details)"
 	}
 	return ""
 }

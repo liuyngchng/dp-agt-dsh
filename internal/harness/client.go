@@ -321,6 +321,11 @@ func (c *Client) Run(sessionID string, prompt string, onNotify func(Notification
 		if receivedPrompt && note.Method == "session.status" {
 			if sid, _ := note.Payload["sessionId"].(string); sid == sessionID {
 				if status, _ := note.Payload["status"].(string); status == "idle" {
+					// turn/end 可能以错误结束（如缺少 LLM 凭证、模型不可用），
+					// 此时不能当成正常完成返回空结果，否则任务会被标记为 completed 且无输出。
+					if msg := TurnEndError(events); msg != "" {
+						return nil, fmt.Errorf("dsh run failed: %s", msg)
+					}
 					return &RunResult{
 						SessionID:     sessionID,
 						FinalResponse: FinalResponse(events),

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,24 +44,24 @@ type LLMConfig struct {
 	RuntimeDir string `yaml:"-"` // dsh 子进程进程级工作目录（initialize.cwd）
 }
 
-// RawConfig 用于获取 cfg.yml 的原始 map 供 CLAUDE.md 模板渲染
+// RawConfig 用于获取 cfg.yml 的原始 map 供 CLAUDE.md 模板渲染。
+// 只读取主配置 dataDir/cfg.yml；该文件不存在时直接返回错误，拒绝带着默认空配置启动，
+// 避免后续任务因缺少 LLM 凭证静默失败。
+// dataDir 由 DATA_DIR 环境变量决定（容器内为 /app/data，本地开发为 data，相对进程 cwd）。
 func LoadRaw(dataDir string) (map[string]interface{}, error) {
-	paths := []string{
-		dataDir + "/cfg.yml",
-		"data/cfg.yml",
+	path := dataDir + "/cfg.yml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("配置文件不存在: %s（请复制 cfg.yml.template 为 cfg.yml 并填写 llm.auth_token、llm.base_url 等配置）", path)
+		}
+		return nil, err
 	}
 	var raw map[string]interface{}
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		if err := yaml.Unmarshal(data, &raw); err != nil {
-			return nil, err
-		}
-		return raw, nil
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
 	}
-	return raw, nil // 允许不存在
+	return raw, nil
 }
 
 func Load(dataDir string) (*Config, error) {
