@@ -32,8 +32,8 @@ sys:
   # 任务总数上限 (pending + processing)，超过后拒单返回 code=2002
   max_pending_tasks: 10
 
-  # 运行时数据保留天数（task_logs + sessions 自动清理）
-  retention_days: 30
+  # 运行时数据保留天数（task_logs + sdk_traces + sessions 自动清理）
+  retention_days: 180
 
 # ---- LLM 配置 ----
 # dsh 通过 DeepSeek Harness SDK 子进程调用 LLM。

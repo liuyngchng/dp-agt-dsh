@@ -19,12 +19,28 @@ import (
 	"dp-agt-dsh/internal/config"
 	"dp-agt-dsh/internal/engine"
 	"dp-agt-dsh/internal/gateway"
+	"dp-agt-dsh/internal/logutil"
 	"dp-agt-dsh/internal/store"
 )
 
 func main() {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	cfg, err := config.Load(dataDir)
+	if err != nil {
+		slog.Error("load config", "err", err)
+		os.Exit(1)
+	}
+
+	// 日志同时输出到 stderr 与按天滚动的文件日志（data/logs/dp-agt-dsh-YYYY-MM-DD.log）。
+	// 日志文件保留天数与运行时数据一致（sys.retention_days，超出后滚动时自动删除）。
+	logFile := logutil.NewDailyFileWriterWithRetention(filepath.Join(cfg.Sys.DataDir, "logs"), "dp-agt-dsh", cfg.Sys.RetentionDays)
+	defer logFile.Close()
+
 	// slog 默认使用 UTC 时间；改为本地时区
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	slog.SetDefault(slog.New(slog.NewTextHandler(logutil.NewMultiWriter(os.Stderr, logFile), &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey {
 				t := a.Value.Time()
@@ -35,16 +51,6 @@ func main() {
 	})))
 
 	slog.Info("==== AI 数字员工 (dsh) starting ====")
-
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "data"
-	}
-	cfg, err := config.Load(dataDir)
-	if err != nil {
-		slog.Error("load config", "err", err)
-		os.Exit(1)
-	}
 	slog.Info("config loaded", "port", cfg.Server.Port, "model", cfg.LLM.Model, "provider", cfg.LLM.Provider)
 
 	// 目录

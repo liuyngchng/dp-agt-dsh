@@ -90,9 +90,10 @@ func (s *Store) migrate() error {
 			finished_ts      INTEGER
 		)`,
 		`CREATE TABLE IF NOT EXISTS sdk_traces (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			task_id   TEXT NOT NULL UNIQUE,
-			sdk_trace TEXT NOT NULL
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id    TEXT NOT NULL UNIQUE,
+			sdk_trace  TEXT NOT NULL,
+			created_ts INTEGER
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			session_id  TEXT PRIMARY KEY,
@@ -140,6 +141,13 @@ func (s *Store) migrate() error {
 	}
 	if s.columnExists("task_logs", "sdk_stream") {
 		_, _ = s.db.Exec(`ALTER TABLE task_logs DROP COLUMN sdk_stream`)
+	}
+
+	// 兼容旧库：为 sdk_traces 补 created_ts 列（用于独立过期删除），并从 task_logs 回填。
+	if !s.columnExists("sdk_traces", "created_ts") {
+		_, _ = s.db.Exec(`ALTER TABLE sdk_traces ADD COLUMN created_ts INTEGER`)
+		_, _ = s.db.Exec(`UPDATE sdk_traces SET created_ts =
+			(SELECT created_ts FROM task_logs WHERE task_logs.task_id = sdk_traces.task_id)`)
 	}
 
 	// 种子 admin
@@ -446,9 +454,9 @@ type SdkTrace struct {
 // UpsertSdkTrace 写入或覆盖某任务的 sdk_trace。
 func (s *Store) UpsertSdkTrace(taskID, sdkTrace string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO sdk_traces (task_id, sdk_trace) VALUES (?, ?)
+		`INSERT INTO sdk_traces (task_id, sdk_trace, created_ts) VALUES (?, ?, ?)
 		 ON CONFLICT(task_id) DO UPDATE SET sdk_trace = excluded.sdk_trace`,
-		taskID, sdkTrace,
+		taskID, sdkTrace, time.Now().UnixMilli(),
 	)
 	return err
 }
@@ -1048,6 +1056,11 @@ func (s *Store) CleanupExpired(retentionDays int) (deletedTasks int, expiredSess
 		deletedTasks = int(n)
 	}
 	_ = s.DeleteSdkTracesByTaskIDs(expiredTaskIDs)
+
+	// sdk_traces 独立过期删除：按自身 created_ts 清理，但保留仍 pending/processing 的任务的 trace。
+	_, _ = s.db.Exec(`DELETE FROM sdk_traces
+		WHERE created_ts IS NOT NULL AND created_ts < ?
+		  AND task_id NOT IN (SELECT task_id FROM task_logs WHERE status IN ('pending', 'processing'))`, cutoffMs)
 
 	// 读过期 session（删除前先读出来方便外部清理磁盘）
 	rows, err := s.db.Query(`SELECT session_id, linkid, status,

@@ -83,7 +83,7 @@ func Load(dataDir string) (*Config, error) {
 	// sys
 	cfg.Sys.MaxConcurrentTasks = intMap(raw, "sys.max_concurrent_tasks", 5)
 	cfg.Sys.MaxPendingTasks = intMap(raw, "sys.max_pending_tasks", 10)
-	cfg.Sys.RetentionDays = intMap(raw, "sys.retention_days", 30)
+	cfg.Sys.RetentionDays = intMap(raw, "sys.retention_days", 180)
 	cfg.Sys.DataDir = strMap(raw, "sys.data_dir", "data")
 
 	// env override
