@@ -65,23 +65,20 @@ func (h *ProcessHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 同一 linkid 有未完成任务时拒绝
-	if h.store.HasActiveByLinkid(linkID) {
-		writeJSON(w, http.StatusConflict, resp(2003, "该公文尚有任务正在处理中，请等待完成后再次提交", "", linkID, nil))
+	// 原子地完成「同 linkid 拒绝 + 队列上限检查 + 入队」，
+	// 与 dp-agt 状态机一致：同 linkid 不可并发、队列满时拒单，
+	// 所有检查在同一锁内完成，消除竞态窗口。
+	code, msg, item := h.queue.TryEnqueue(iface, body)
+	switch code {
+	case 2003:
+		writeJSON(w, http.StatusConflict, resp(2003, msg, "", linkID, nil))
 		return
-	}
-
-	// 队列上限
-	maxPending := h.cfg.Sys.MaxPendingTasks
-	activeCount := h.queue.GetRunningCount() + h.queue.GetPendingCount()
-	if activeCount >= maxPending {
-		msg := "任务队列已满，当前处理中任务数 " + itoa(activeCount) + "/" + itoa(maxPending) + "，请稍后重试"
+	case 2002:
 		writeJSON(w, http.StatusServiceUnavailable, resp(2002, msg, "", linkID, nil))
 		return
 	}
 
-	// 入队
-	item := h.queue.Enqueue(iface, body)
+	go h.queue.Pump()
 	slog.Info("enqueued", "task", item.TaskID, "link", linkID, "path", interfacePath)
 
 	writeJSON(w, http.StatusOK, resp(0, "success", item.TaskID, linkID, nil))
@@ -185,18 +182,6 @@ func (h *TasksHandler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusBadRequest, resp(1001, "未找到可取消的任务", "", task.LinkID, nil))
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
 
 // HandleTrace 任务追踪

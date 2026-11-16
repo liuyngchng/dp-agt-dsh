@@ -15,6 +15,23 @@ import (
 	"dp-agt-dsh/internal/store"
 )
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 任务队列状态机（与 dp-agt 完全对齐）
+//
+//  提交 ──→ 同 linkid 有 active 任务？ ──是──→ 拒绝 2003（不入队，不写 DB）
+//   │               │否
+//   │   pending+running >= max_pending_tasks？ ──是──→ 拒绝 2002
+//   │               │否
+//   │         写入 DB（pending）+ 加入队列
+//   │               │
+//   pump ──→ running < max_concurrent？ ──是──→ 出队 → running++ → processItem
+//   │               │否
+//   │          等待（下一个 goroutine 完成时 pump 再次被调用）
+//
+// pending 只表示「并发槽位已满，等待执行」，不表示「等待同 linkid 的前序任务」。
+// 同一 linkid 同一时刻只允许一个 active 任务，提交侧直接拒绝，不排队。
+// ═══════════════════════════════════════════════════════════════════════════
+
 // Queue 异步任务队列
 type Queue struct {
 	cfg   *config.Config
@@ -27,9 +44,6 @@ type Queue struct {
 	// dsMu 保护 ds 的懒启动/重建，避免并发任务同时启动多个 dsh 子进程。
 	dsMu sync.Mutex
 	ds   *harness.Client
-
-	linkMu     sync.Mutex
-	linkChains map[string]chan struct{}
 
 	// runningSessions 记录运行中任务的 task_id → sessionID，供管理员取消 processing 任务。
 	runningSessions sync.Map
@@ -48,12 +62,120 @@ type QueueItem struct {
 
 func NewQueue(cfg *config.Config, s *store.Store) *Queue {
 	q := &Queue{
-		cfg:        cfg,
-		store:      s,
-		linkChains: make(map[string]chan struct{}),
+		cfg:   cfg,
+		store: s,
 	}
 	q.recoverOrphanedTasks()
 	return q
+}
+
+// TryEnqueue 原子地完成「同 linkid 拒绝 + 队列上限检查 + 写 DB + 入队」，
+// 不可拆分：HasActiveByLinkid 与 Enqueue 在同一锁内完成，消除竞态窗口。
+//
+// 返回值：
+//
+//	code==0     → 入队成功，item 非 nil
+//	code==2002  → 队列已满，msg 含详情
+//	code==2003  → 同 linkid 有未完成任务，msg 含详情
+func (q *Queue) TryEnqueue(iface *store.AgentInterface, body map[string]interface{}) (code int, msg string, item *QueueItem) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	linkID, _ := body["linkid"].(string)
+
+	// 1) 同 linkid 有活跃任务 → 直接拒绝（与 dp-agt 一致）
+	if q.store.HasActiveByLinkid(linkID) {
+		return 2003, "该公文尚有任务正在处理中，请等待完成后再次提交", nil
+	}
+
+	// 2) 队列上限（pending + running）
+	maxPending := q.cfg.Sys.MaxPendingTasks
+	activeCount := q.running + len(q.pending)
+	if activeCount >= maxPending {
+		return 2002, "任务队列已满，当前任务数 " + itoa(activeCount) + "/" + itoa(maxPending) + "，请稍后重试", nil
+	}
+
+	// 3) 写入 DB + 入队
+	taskID := newUUID()
+	bodyJSON, _ := json.Marshal(body)
+
+	resp := fmt.Sprintf(`{"code":0,"timestamp":"%s","message":"success","task_id":"%s","linkid":"%s"}`,
+		store.TimeNowFmt(), taskID, linkID)
+
+	t := &store.TaskLog{
+		TaskID:          taskID,
+		LinkID:          linkID,
+		Path:            iface.Path,
+		InterfaceID:     iface.ID,
+		Status:          store.StatusPending,
+		RequestBody:     string(bodyJSON),
+		RequestResponse: resp,
+		CreatedAt:       store.TimeNowFmt(),
+		CreatedTs:       store.TimeNowMs(),
+	}
+	_ = q.store.CreateTaskLog(t)
+
+	// 任务提交即创建/复用 session，保证「会话管理」「会话记录」对 pending 任务也立即可见。
+	if existing, _ := q.store.GetSessionByLinkid(linkID); existing != nil {
+		_ = q.store.TouchSession(existing.SessionID)
+		t.SessionID = existing.SessionID
+	} else {
+		sessionID := "s-" + taskID
+		_ = q.store.UpsertSession(sessionID, linkID)
+		t.SessionID = sessionID
+	}
+	if t.SessionID != "" {
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": t.SessionID})
+	}
+
+	item = &QueueItem{TaskID: taskID, Path: iface.Path, Iface: iface, Body: body}
+	q.pending = append(q.pending, item)
+
+	return 0, "success", item
+}
+
+// Enqueue 兼容旧调用方的简单入队（不复核 HasActiveByLinkid/队列上限，
+// 仅用于 recoverOrphanedTasks 等内部场景）。
+func (q *Queue) Enqueue(iface *store.AgentInterface, body map[string]interface{}) *QueueItem {
+	taskID := newUUID()
+	linkID, _ := body["linkid"].(string)
+	bodyJSON, _ := json.Marshal(body)
+
+	resp := fmt.Sprintf(`{"code":0,"timestamp":"%s","message":"success","task_id":"%s","linkid":"%s"}`,
+		store.TimeNowFmt(), taskID, linkID)
+
+	t := &store.TaskLog{
+		TaskID:          taskID,
+		LinkID:          linkID,
+		Path:            iface.Path,
+		InterfaceID:     iface.ID,
+		Status:          store.StatusPending,
+		RequestBody:     string(bodyJSON),
+		RequestResponse: resp,
+		CreatedAt:       store.TimeNowFmt(),
+		CreatedTs:       store.TimeNowMs(),
+	}
+	_ = q.store.CreateTaskLog(t)
+
+	if existing, _ := q.store.GetSessionByLinkid(linkID); existing != nil {
+		_ = q.store.TouchSession(existing.SessionID)
+		t.SessionID = existing.SessionID
+	} else {
+		sessionID := "s-" + taskID
+		_ = q.store.UpsertSession(sessionID, linkID)
+		t.SessionID = sessionID
+	}
+	if t.SessionID != "" {
+		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": t.SessionID})
+	}
+
+	item := &QueueItem{TaskID: taskID, Path: iface.Path, Iface: iface, Body: body}
+	q.mu.Lock()
+	q.pending = append(q.pending, item)
+	q.mu.Unlock()
+
+	go q.pump()
+	return item
 }
 
 // recoverOrphanedTasks 启动时恢复上次未完成的任务
@@ -67,11 +189,8 @@ func (q *Queue) recoverOrphanedTasks() {
 	for _, task := range active {
 		switch task.Status {
 		case store.StatusPending:
-			// pending 任务重新入队
 			iface, ifaceErr := q.store.GetInterfaceByPath(task.Path)
 			if ifaceErr != nil || iface == nil {
-				// 接口已被删除（如重新上传提示词包）时不能静默丢弃，
-				// 标记失败并记录原因，避免任务对用户「凭空消失」（Bug #4）。
 				_ = q.store.UpdateTaskResult(task.TaskID, map[string]interface{}{
 					"status":        string(store.StatusFailed),
 					"error_message": "服务重启后接口不存在，任务无法恢复: " + task.Path,
@@ -100,7 +219,6 @@ func (q *Queue) recoverOrphanedTasks() {
 				killed++
 			}
 		case store.StatusProcessing:
-			// processing 任务（进程中断）标记失败
 			_ = q.store.UpdateTaskResult(task.TaskID, map[string]interface{}{
 				"status":        string(store.StatusFailed),
 				"error_message": "服务重启：任务被中断（原进程已退出）",
@@ -118,50 +236,14 @@ func (q *Queue) recoverOrphanedTasks() {
 	}
 }
 
-func (q *Queue) Enqueue(iface *store.AgentInterface, body map[string]interface{}) *QueueItem {
-	taskID := newUUID()
-	linkID, _ := body["linkid"].(string)
-	bodyJSON, _ := json.Marshal(body)
-
-	resp := fmt.Sprintf(`{"code":0,"timestamp":"%s","message":"success","task_id":"%s","linkid":"%s"}`,
-		store.TimeNowFmt(), taskID, linkID)
-
-	t := &store.TaskLog{
-		TaskID:          taskID,
-		LinkID:          linkID,
-		Path:            iface.Path,
-		InterfaceID:     iface.ID,
-		Status:          store.StatusPending,
-		RequestBody:     string(bodyJSON),
-		RequestResponse: resp,
-		CreatedAt:       store.TimeNowFmt(),
-		CreatedTs:       store.TimeNowMs(),
-	}
-	_ = q.store.CreateTaskLog(t)
-
-	// 任务提交即创建/复用 session，保证「会话管理」「会话记录」对 pending 任务也立即可见。
-	// session_id 采用 "s-"+taskID，后续处理阶段如复用旧 session 会再更新。
-	if existing, _ := q.store.GetSessionByLinkid(linkID); existing != nil {
-		_ = q.store.TouchSession(existing.SessionID)
-		t.SessionID = existing.SessionID
-	} else {
-		sessionID := "s-" + taskID
-		_ = q.store.UpsertSession(sessionID, linkID)
-		t.SessionID = sessionID
-	}
-	if t.SessionID != "" {
-		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": t.SessionID})
-	}
-
-	item := &QueueItem{TaskID: taskID, Path: iface.Path, Iface: iface, Body: body}
-	q.mu.Lock()
-	q.pending = append(q.pending, item)
-	q.mu.Unlock()
-
-	go q.pump()
-	return item
+// Pump 对外暴露的队列消费入口（内部 goroutine 结束后也会自行调用 pump）。
+func (q *Queue) Pump() {
+	q.pump()
 }
 
+// pump 消费 pending 队列，受 max_concurrent_tasks 限制。
+// 不同 linkid 之间可以并发；同一 linkid 的并发由提交侧 HasActiveByLinkid 保证。
+// 不再使用 linkChains 串行化——提交侧已阻止同 linkid 并发入队。
 func (q *Queue) pump() {
 	maxConc := q.cfg.Sys.MaxConcurrentTasks
 
@@ -172,37 +254,18 @@ func (q *Queue) pump() {
 		q.running++
 		q.mu.Unlock()
 
-		// 从 pending 弹出的瞬间即标记为 inflight，覆盖「已出队但尚未注册 session」
-		// 的取消竞态窗口（Bug #3）。inflight 记录 taskID → 取消标记。
 		q.inflight.Store(item.TaskID, false)
 
-		linkID, _ := item.Body["linkid"].(string)
-		q.linkMu.Lock()
-		prev, exists := q.linkChains[linkID]
-		next := make(chan struct{})
-		q.linkChains[linkID] = next
-		q.linkMu.Unlock()
+		go func(it *QueueItem) {
+			defer q.inflight.Delete(it.TaskID)
 
-		go func(it *QueueItem, prevCh chan struct{}, nextCh chan struct{}, lid string) {
-			defer q.inflight.Delete(it.TaskID) // clean up inflight marker after task finishes
-
-			if exists && prevCh != nil {
-				<-prevCh
-			}
 			q.processItem(it)
-			close(nextCh)
-
-			q.linkMu.Lock()
-			if cur, ok := q.linkChains[lid]; ok && cur == nextCh {
-				delete(q.linkChains, lid)
-			}
-			q.linkMu.Unlock()
 
 			q.mu.Lock()
 			q.running--
 			q.mu.Unlock()
 			q.pump()
-		}(item, prev, next, linkID)
+		}(item)
 
 		q.mu.Lock()
 	}
@@ -248,8 +311,6 @@ func (q *Queue) processItem(item *QueueItem) {
 		q.store.TouchSession(resumeID)
 	}
 
-	// 立即写入 session 和 task_logs 的 session_id，保证任务提交后「会话管理」立即可见、
-	// 且后续无论 dsh 启动/执行是否失败，「会话记录」都可点击查看。
 	sessionID := resumeID
 	if sessionID == "" {
 		sessionID = "s-" + taskID
@@ -277,7 +338,6 @@ func (q *Queue) processItem(item *QueueItem) {
 	}
 
 	// 获取 stable 的 ds 引用（ensureDSH 成功后，ds 在 dsMu 保护下为非 nil）。
-	// 后续本 goroutine 内不再加锁直接使用 ds，确保同一 ds 引用贯穿整个任务生命周期。
 	q.dsMu.Lock()
 	ds := q.ds
 	q.dsMu.Unlock()
@@ -291,8 +351,7 @@ func (q *Queue) processItem(item *QueueItem) {
 			_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"session_id": sessionID})
 		}
 	} else {
-		// 新 session：显式用 session/new + cwd 创建，让工作目录一开始就正确，
-		// 而不是先继承 initialize 兜底目录、再用 working-directory/set 切换。
+		// 新 session：显式用 session/new + cwd 创建，让工作目录一开始就正确。
 		realID, err := ds.NewSession(workDir)
 		if err != nil {
 			slog.Warn("session/new failed, falling back to prompt-time create", "session", sessionID, "err", err)
@@ -303,15 +362,9 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	}
 
-	// 注册 task→session 映射，供管理员取消 processing 任务。
-	// 此处必须在 inflight 检查通过且 runningSessions.Store 之前，再次检查 inflight 取消标记，
-	// 防止 just-in-time 竞争：管理员在 processItem 开始检查与 Store 之间取消了任务（Bug #3）。
 	q.runningSessions.Store(taskID, sessionID)
 	defer q.runningSessions.Delete(taskID)
 
-	// 兜底检查：Store 与 defer 之间的极小窗口内取消？CancelTask 会先 Load 再
-	// CancelSession，runningSessions.Store 已完成后取消能被正确捕获。但若取消
-	// 发生在 Store 之前，我们需要二次检查 inflight 标记。
 	if v, ok := q.inflight.Load(taskID); ok && v == true {
 		_ = ds.CancelSession(sessionID)
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
@@ -325,27 +378,23 @@ func (q *Queue) processItem(item *QueueItem) {
 		return
 	}
 
-	// 兜底切换 session 的工作目录（session/new 已指定 cwd 时，这里是幂等确认，
-	// 不产生多余的「工作目录变更」消息）。
+	// 兜底切换 session 的工作目录
 	if err := ds.SetWorkingDirectory(sessionID, workDir); err != nil {
 		q.failTask(taskID, "设置工作目录失败: "+err.Error())
 		return
 	}
 
 	var allEvents []harness.SessionEvent
-	// 增量落库：任务处理中每收到一条 session event 就按时间节流持久化 sdk_trace，
-	// 使「处理中重新打开会话记录」时 DB 已有部分 trace，snapshot 能拉到已产生的历史消息。
 	var lastPersist time.Time
 
 	result, err := ds.Run(sessionID, rendered, func(n harness.Notification) {
 		PublishStream(sessionID, n)
 
-		// 从通知中提取 session event
 		if n.Method == "session.event" {
 			if ev, ok := n.Payload["event"].(map[string]interface{}); ok {
 				allEvents = append(allEvents, harness.SessionEvent{
 					Type: getStr(ev, "type"),
-					Data: getMap(ev, "data"), // 内层 data，不含外层外壳
+					Data: getMap(ev, "data"),
 					Time: getInt64(ev, "time"),
 				})
 				if time.Since(lastPersist) >= time.Second {
@@ -358,7 +407,7 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	})
 
-	// 检查任务是否在运行期间被管理员取消（状态已被置为 cancelled）
+	// 检查任务是否在运行期间被管理员取消
 	if current, _ := q.store.GetTaskLog(taskID); current != nil && current.Status == store.StatusCancelled {
 		trace, _ := json.Marshal(allEvents)
 		_ = q.store.UpsertSdkTrace(taskID, string(trace))
@@ -411,12 +460,10 @@ func (q *Queue) ensureDSH() error {
 	q.dsMu.Lock()
 	defer q.dsMu.Unlock()
 
-	// 已存在且进程存活则直接复用；进程已崩溃（stdout 关闭、进程退出）则重建。
 	if q.ds != nil && q.ds.IsAlive() {
 		return nil
 	}
 
-	// 进程已死：关闭旧 client 释放资源，再重新启动（Bug #1）。
 	if q.ds != nil {
 		slog.Warn("dsh process exited unexpectedly, restarting", "task_affected", "recovering")
 		_ = q.ds.Close()
@@ -424,7 +471,6 @@ func (q *Queue) ensureDSH() error {
 	}
 
 	ds := harness.NewClient(q.cfg.LLM)
-	// 注入业务配置（token、回调地址等），供提示词中 $FILE_URL_TOKEN 等变量引用
 	ds.SetExtraEnv(BuildBusinessEnv(q.store.GetAllConfigPlain()))
 	if err := ds.Start(); err != nil {
 		return err
@@ -457,7 +503,6 @@ func (q *Queue) failTask(taskID, errMsg string) {
 func newUUID() string {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		// fallback
 		for i := range b {
 			b[i] = byte(time.Now().UnixNano() >> (i * 4))
 		}
@@ -492,7 +537,21 @@ func getInt64(m map[string]interface{}, key string) int64 {
 	return 0
 }
 
-// ── SSE 事件总线 ──
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSE 事件总线
+// ═══════════════════════════════════════════════════════════════════════════
 
 type sseSub struct {
 	ch chan harness.Notification
@@ -503,7 +562,6 @@ var (
 	sseSubs = make(map[string][]*sseSub)
 )
 
-// SubscribeStream 订阅 session 的流式事件
 func SubscribeStream(sessionID string) (<-chan harness.Notification, func()) {
 	ch := make(chan harness.Notification, 512)
 	sub := &sseSub{ch: ch}
@@ -523,7 +581,6 @@ func SubscribeStream(sessionID string) (<-chan harness.Notification, func()) {
 	}
 }
 
-// PublishStream 向 session 的所有订阅者推送事件
 func PublishStream(sessionID string, msg harness.Notification) {
 	sseMu.Lock()
 	subs := sseSubs[sessionID]
@@ -536,7 +593,6 @@ func PublishStream(sessionID string, msg harness.Notification) {
 	}
 }
 
-// GetActiveSessions 返回所有有订阅者的 session ID
 func GetActiveSessions() []string {
 	sseMu.Lock()
 	defer sseMu.Unlock()
@@ -547,14 +603,12 @@ func GetActiveSessions() []string {
 	return out
 }
 
-// GetRunningCount 返回队列中 running 的数量
 func (q *Queue) GetRunningCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.running
 }
 
-// GetPendingCount 返回队列中等待的数量
 func (q *Queue) GetPendingCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -562,10 +616,6 @@ func (q *Queue) GetPendingCount() int {
 }
 
 // CancelTask 取消一个任务（支持 pending、inflight 过渡期和 processing）。
-//   - pending：直接从队列移除，返回 "pending"。
-//   - inflight：任务已从队列弹出但尚未注册 session，置取消标记，返回 "pending"。
-//   - processing：通过 session/cancel 通知中断正在执行的 SDK query，返回 "processing"。
-//   - 找不到可取消的任务时返回空字符串。
 func (q *Queue) CancelTask(taskID string) string {
 	// 1) 处理中的任务：中断 SDK
 	if sessionID, ok := q.runningSessions.Load(taskID); ok {
