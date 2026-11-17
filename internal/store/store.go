@@ -85,8 +85,10 @@ func (s *Store) migrate() error {
 			sdk_output       TEXT,
 			error_message    TEXT,
 			created_at       TEXT,
+			start_at         TEXT,
 			finished_at      TEXT,
 			created_ts       INTEGER,
+			start_ts         INTEGER,
 			finished_ts      INTEGER
 		)`,
 		`CREATE TABLE IF NOT EXISTS sdk_traces (
@@ -129,6 +131,14 @@ func (s *Store) migrate() error {
 
 	// 兼容旧库：补列
 	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN user_version INTEGER DEFAULT 1`)
+
+	// 兼容旧库：补 start_at / start_ts（任务开始执行时间，与 created_at 提交入队时间区分）
+	if !s.columnExists("task_logs", "start_at") {
+		_, _ = s.db.Exec(`ALTER TABLE task_logs ADD COLUMN start_at TEXT`)
+	}
+	if !s.columnExists("task_logs", "start_ts") {
+		_, _ = s.db.Exec(`ALTER TABLE task_logs ADD COLUMN start_ts INTEGER`)
+	}
 
 	// 迁移：把旧 task_logs.sdk_trace 搬到独立 sdk_traces 表。
 	// 老库的 task_logs 仍带 sdk_trace 列（CREATE TABLE IF NOT EXISTS 不会改动既有表），
@@ -254,8 +264,10 @@ type TaskLog struct {
 	SdkOutput       string     `json:"sdk_output"`
 	ErrorMessage    string     `json:"error_message"`
 	CreatedAt       string     `json:"created_at"`
+	StartAt         string     `json:"start_at"`
 	FinishedAt      string     `json:"finished_at"`
 	CreatedTs       int64      `json:"created_ts"`
+	StartTs         int64      `json:"start_ts"`
 	FinishedTs      int64      `json:"finished_ts"`
 }
 
@@ -264,12 +276,12 @@ func (s *Store) CreateTaskLog(t *TaskLog) error {
 		`INSERT INTO task_logs (task_id, linkid, session_id, path, interface_id, status,
 		 request_body, request_response, prompt, sdk_output,
 		 error_message,
-		 created_at, finished_at, created_ts, finished_ts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, start_at, finished_at, created_ts, start_ts, finished_ts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.TaskID, t.LinkID, t.SessionID, t.Path, t.InterfaceID, t.Status,
 		t.RequestBody, t.RequestResponse, t.Prompt, t.SdkOutput,
 		t.ErrorMessage,
-		t.CreatedAt, t.FinishedAt, t.CreatedTs, t.FinishedTs,
+		t.CreatedAt, t.StartAt, t.FinishedAt, t.CreatedTs, t.StartTs, t.FinishedTs,
 	)
 	return err
 }
@@ -279,13 +291,13 @@ func (s *Store) GetTaskLog(taskID string) (*TaskLog, error) {
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
 		COALESCE(sdk_output,''), COALESCE(error_message,''),
-		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
+		COALESCE(created_at,''), COALESCE(start_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(start_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE task_id = ?`, taskID)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 		&t.ErrorMessage,
-		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
+		&t.CreatedAt, &t.StartAt, &t.FinishedAt, &t.CreatedTs, &t.StartTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -322,13 +334,13 @@ func (s *Store) getTaskByWhere(where string, args ...interface{}) (*TaskLog, err
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
 		COALESCE(sdk_output,''), COALESCE(error_message,''),
-		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
+		COALESCE(created_at,''), COALESCE(start_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(start_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs WHERE `+where, args...)
 	var t TaskLog
 	err := row.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 		&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 		&t.ErrorMessage,
-		&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs)
+		&t.CreatedAt, &t.StartAt, &t.FinishedAt, &t.CreatedTs, &t.StartTs, &t.FinishedTs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -395,7 +407,7 @@ func (s *Store) ListTasksPaged(taskID, linkID string, offset, limit int) ([]Task
 	countQ := "SELECT COUNT(*) FROM task_logs " + where
 	s.db.QueryRow(countQ, args...).Scan(&total)
 
-	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	dataQ := "SELECT task_id, COALESCE(linkid,''), COALESCE(session_id,''), COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''), COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''), COALESCE(sdk_output,''), COALESCE(error_message,''), COALESCE(created_at,''), COALESCE(start_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(start_ts,0), COALESCE(finished_ts,0) FROM task_logs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	dataArgs := append(append([]interface{}{}, args...), limit, offset)
 	rows, err := s.db.Query(dataQ, dataArgs...)
 	if err != nil {
@@ -419,7 +431,7 @@ func (s *Store) queryTasks(where string, args ...interface{}) ([]TaskLog, error)
 		COALESCE(path,''), COALESCE(interface_id,''), COALESCE(status,''),
 		COALESCE(request_body,''), COALESCE(request_response,''), COALESCE(prompt,''),
 		COALESCE(sdk_output,''), COALESCE(error_message,''),
-		COALESCE(created_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(finished_ts,0)
+		COALESCE(created_at,''), COALESCE(start_at,''), COALESCE(finished_at,''), COALESCE(created_ts,0), COALESCE(start_ts,0), COALESCE(finished_ts,0)
 		FROM task_logs `+where, args...)
 	if err != nil {
 		return nil, err
@@ -435,7 +447,7 @@ func scanTasks(rows *sql.Rows) ([]TaskLog, error) {
 		if err := rows.Scan(&t.TaskID, &t.LinkID, &t.SessionID, &t.Path, &t.InterfaceID, &t.Status,
 			&t.RequestBody, &t.RequestResponse, &t.Prompt, &t.SdkOutput,
 			&t.ErrorMessage,
-			&t.CreatedAt, &t.FinishedAt, &t.CreatedTs, &t.FinishedTs); err != nil {
+			&t.CreatedAt, &t.StartAt, &t.FinishedAt, &t.CreatedTs, &t.StartTs, &t.FinishedTs); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

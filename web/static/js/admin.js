@@ -616,7 +616,7 @@ function renderTasksPage(list) {
     const totalPages = Math.max(1, Math.ceil(total / TASKS_PAGE_SIZE));
     const tbody = document.getElementById('tasksTbody');
     if (total === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无任务</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;padding:24px;">暂无任务</td></tr>';
         document.getElementById('tasksPager').innerHTML = '';
         return;
     }
@@ -645,11 +645,12 @@ function renderTasksPage(list) {
             <td><code style="font-size:0.78rem;">${escHtml((t.linkid || '-').substring(0,8))}...</code></td>
             <td>${statusText(t.status)}</td>
             <td class="col-date">${fmtTs(t.created_at)}</td>
+            <td class="col-date">${fmtTs(t.start_at)}</td>
             <td class="col-date">${fmtTs(t.finished_at)}</td>
             <td class="col-action">${viewBtn}</td>
         </tr>
         <tr class="row-detail" id="${rid}" style="display:none;">
-            <td colspan="8" style="padding:4px 12px 8px;font-size:0.82rem;color:#555;user-select:text;">
+            <td colspan="9" style="padding:4px 12px 8px;font-size:0.82rem;color:#555;user-select:text;">
                 <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
                     <span><span class="audit-info-label">Task ID:</span> ${taskId}</span>
                     <span><span class="audit-info-label">LinkID:</span> ${escHtml(t.linkid || '-')}</span>
@@ -695,7 +696,7 @@ function taskDetailHtml(t) {
         '<div class="task-info-row"><span class="task-info-label">标题：</span>' + escHtml(t.title || '-') + '</div>' +
         '<div class="task-info-row"><span class="task-info-label">Task ID：</span>' + escHtml(t.task_id) + '<span class="task-info-label" style="margin-left:8px;">LinkID：</span>' + escHtml(t.linkid || '-') + '<span class="task-info-label" style="margin-left:8px;">Session：</span>' + escHtml((t.session_id || '-').substring(0,8)) + '</div>' +
         '<div class="task-info-row"><span class="task-info-label">访问路径：</span><span title="' + escHtml(ifacePathTip(t.path)) + '">' + escHtml(t.path || '-') + '</span><span class="task-info-label" style="margin-left:8px;">状态：</span>' + statusText(t.status) + '</div>' +
-        '<div class="task-info-row"><span class="task-info-label">创建：</span>' + fmtTs(t.created_at) + '<span class="task-info-label" style="margin-left:8px;">完成：</span>' + fmtTs(t.finished_at) + '</div>' +
+        '<div class="task-info-row"><span class="task-info-label">创建：</span>' + fmtTs(t.created_at) + '<span class="task-info-label" style="margin-left:8px;">开始：</span>' + fmtTs(t.start_at) + '<span class="task-info-label" style="margin-left:8px;">完成：</span>' + fmtTs(t.finished_at) + '</div>' +
         (errMsg ? '<div class="task-info-row" style="color:#c62828;"><span class="task-info-label">错误信息：</span>' + escHtml(errMsg) + '</div>' : '') +
         '</div>';
     // 折叠区 — 可滚动

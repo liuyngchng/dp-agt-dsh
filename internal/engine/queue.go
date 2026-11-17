@@ -51,6 +51,12 @@ type Queue struct {
 	// inflight 记录「已从 pending 出队、但尚未注册 session」的过渡期任务。
 	// 解决 pump 弹出到 runningSessions.Store 之间取消失败的竞态窗口（Bug #3）。
 	inflight sync.Map
+
+	// cancelRequested 记录「处理中」任务被管理员请求取消、但 ds.Run 尚未返回的标记。
+	// 取消落库延后到 processItem 中 ds.Run 返回后：若在 ds.Run 阻塞期间就改 DB 状态为
+	// cancelled，HasActiveByLinkid 会放行同 linkid 的新任务，而旧 session 尚未释放，
+	// 造成两个同 linkid 任务重叠。
+	cancelRequested sync.Map
 }
 
 type QueueItem struct {
@@ -312,7 +318,13 @@ func (q *Queue) processItem(item *QueueItem) {
 		return
 	}
 
-	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{"status": string(store.StatusProcessing)})
+	// 标记开始执行：start_at 只在这里写一次，代表「真正开始跑」的时刻；
+	// 排队等待的时间（pending → processing 之间的间隔）由此与 created_at 区分开。
+	_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
+		"status":    string(store.StatusProcessing),
+		"start_at":  store.TimeNowFmt(),
+		"start_ts":  store.TimeNowMs(),
+	})
 	slog.Info("processing", "task", taskID, "link", linkID, "path", item.Path)
 
 	// 读提示词模板
@@ -388,6 +400,7 @@ func (q *Queue) processItem(item *QueueItem) {
 
 	q.runningSessions.Store(taskID, sessionID)
 	defer q.runningSessions.Delete(taskID)
+	defer q.cancelRequested.Delete(taskID)
 
 	if v, ok := q.inflight.Load(taskID); ok && v == true {
 		_ = ds.CancelSession(sessionID)
@@ -431,8 +444,10 @@ func (q *Queue) processItem(item *QueueItem) {
 		}
 	})
 
-	// 检查任务是否在运行期间被管理员取消
-	if current, _ := q.store.GetTaskLog(taskID); current != nil && current.Status == store.StatusCancelled {
+	// 检查任务是否在运行期间被管理员取消。
+	// 取消标记来自内存 cancelRequested（CancelTask 置位），而非 DB 状态：
+	// 取消期间 DB 仍需保持 processing，否则 HasActiveByLinkid 会放行同 linkid 新任务。
+	if _, ok := q.cancelRequested.Load(taskID); ok {
 		trace, _ := json.Marshal(allEvents)
 		_ = q.store.UpsertSdkTrace(taskID, string(trace))
 		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
@@ -641,14 +656,12 @@ func (q *Queue) GetPendingCount() int {
 
 // CancelTask 取消一个任务（支持 pending、inflight 过渡期和 processing）。
 func (q *Queue) CancelTask(taskID string) string {
-	// 1) 处理中的任务：中断 SDK
+	// 1) 处理中的任务：置取消标记并中断 SDK。
+	// 不立即写 DB 为 cancelled——那样会在 ds.Run 尚未返回、session 尚未释放前就
+	// 让 HasActiveByLinkid 放行同 linkid 的新任务，造成重叠。真正的 cancelled 落库
+	// 在 processItem 里 ds.Run 返回后完成。
 	if sessionID, ok := q.runningSessions.Load(taskID); ok {
-		_ = q.store.UpdateTaskResult(taskID, map[string]interface{}{
-			"status":        string(store.StatusCancelled),
-			"error_message": "任务已被管理员停止",
-			"finished_at":   store.TimeNowFmt(),
-			"finished_ts":   store.TimeNowMs(),
-		})
+		q.cancelRequested.Store(taskID, true)
 		q.dsMu.Lock()
 		ds := q.ds
 		q.dsMu.Unlock()

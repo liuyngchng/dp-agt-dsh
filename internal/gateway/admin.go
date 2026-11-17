@@ -221,6 +221,7 @@ func (h *AdminHandler) HandleAdminTasks(w http.ResponseWriter, r *http.Request) 
 		Status        string `json:"status"`
 		ErrorMsg      string `json:"error_message"`
 		CreatedAt     string `json:"created_at"`
+		StartAt       string `json:"start_at"`
 		FinishedAt    string `json:"finished_at"`
 	}
 	views := make([]taskView, 0, len(tasks))
@@ -243,6 +244,7 @@ func (h *AdminHandler) HandleAdminTasks(w http.ResponseWriter, r *http.Request) 
 			Status:        string(t.Status),
 			ErrorMsg:      t.ErrorMessage,
 			CreatedAt:     t.CreatedAt,
+			StartAt:       t.StartAt,
 			FinishedAt:    t.FinishedAt,
 		})
 	}
@@ -272,6 +274,7 @@ func (h *AdminHandler) HandleAdminTaskDetail(w http.ResponseWriter, r *http.Requ
 		"sdk_trace":        h.store.GetSdkTrace(task.TaskID),
 		"error_message":    task.ErrorMessage,
 		"created_at":       task.CreatedAt,
+		"start_at":         task.StartAt,
 		"finished_at":      task.FinishedAt,
 	}))
 }
@@ -637,6 +640,7 @@ func (h *AdminHandler) HandleAudit(w http.ResponseWriter, r *http.Request) {
 		Path       string `json:"path"`
 		Status     string `json:"status"`
 		CreatedAt  string `json:"created_at"`
+		StartAt    string `json:"start_at"`
 		FinishedAt string `json:"finished_at"`
 	}
 	views := make([]auditView, 0, len(tasks))
@@ -649,6 +653,7 @@ func (h *AdminHandler) HandleAudit(w http.ResponseWriter, r *http.Request) {
 			Path:       t.Path,
 			Status:     string(t.Status),
 			CreatedAt:  t.CreatedAt,
+			StartAt:    t.StartAt,
 			FinishedAt: t.FinishedAt,
 		})
 	}
@@ -673,6 +678,7 @@ func (h *AdminHandler) HandleAuditDetail(w http.ResponseWriter, r *http.Request)
 		"status":           string(task.Status),
 		"error_message":    task.ErrorMessage,
 		"created_at":       task.CreatedAt,
+		"start_at":         task.StartAt,
 		"finished_at":      task.FinishedAt,
 		"request_body":     mustParseJSON(task.RequestBody),
 		"request_response": mustParseJSON(task.RequestResponse),
@@ -720,6 +726,7 @@ func (h *AdminHandler) HandleLinkTimeline(w http.ResponseWriter, r *http.Request
 			Status:       string(t.Status),
 			ErrorMessage: t.ErrorMessage,
 			CreatedAt:    t.CreatedAt,
+			StartAt:      t.StartAt,
 			FinishedAt:   t.FinishedAt,
 			Events:       buildOutputOnlyEvents(&t),
 		})
@@ -1083,6 +1090,7 @@ func (h *AdminHandler) HandleDataTableQuery(w http.ResponseWriter, r *http.Reque
 		Path       string `json:"path"`
 		Status     string `json:"status"`
 		CreatedAt  string `json:"created_at"`
+		StartAt    string `json:"start_at"`
 		FinishedAt string `json:"finished_at"`
 	}
 	items := make([]item, 0, len(tasks))
@@ -1095,6 +1103,7 @@ func (h *AdminHandler) HandleDataTableQuery(w http.ResponseWriter, r *http.Reque
 			Path:       t.Path,
 			Status:     string(t.Status),
 			CreatedAt:  t.CreatedAt,
+			StartAt:    t.StartAt,
 			FinishedAt: t.FinishedAt,
 		})
 	}
@@ -1122,6 +1131,7 @@ func (h *AdminHandler) HandleDataTableLatest(w http.ResponseWriter, r *http.Requ
 		Path       string `json:"path"`
 		Status     string `json:"status"`
 		CreatedAt  string `json:"created_at"`
+		StartAt    string `json:"start_at"`
 		FinishedAt string `json:"finished_at"`
 	}
 	items := make([]item, 0, len(tasks))
@@ -1134,6 +1144,7 @@ func (h *AdminHandler) HandleDataTableLatest(w http.ResponseWriter, r *http.Requ
 			Path:       t.Path,
 			Status:     string(t.Status),
 			CreatedAt:  t.CreatedAt,
+			StartAt:    t.StartAt,
 			FinishedAt: t.FinishedAt,
 		})
 	}
@@ -1753,6 +1764,7 @@ func (h *AdminHandler) HandleTaskTrace(w http.ResponseWriter, r *http.Request) {
 		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
+		"start_at":      task.StartAt,
 		"finished_at":   task.FinishedAt,
 	}))
 }
@@ -1779,6 +1791,7 @@ func (h *AdminHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
+		"start_at":      task.StartAt,
 		"finished_at":   task.FinishedAt,
 	}))
 }

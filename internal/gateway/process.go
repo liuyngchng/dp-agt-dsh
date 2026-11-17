@@ -133,6 +133,7 @@ func (h *TasksHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		Path      string `json:"interface_path"`
 		Status    string `json:"status"`
 		CreatedAt string `json:"created_at"`
+		StartAt   string `json:"start_at"`
 	}
 	var views []taskView
 	for _, t := range tasks {
@@ -142,6 +143,7 @@ func (h *TasksHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 			Path:      t.Path,
 			Status:    string(t.Status),
 			CreatedAt: t.CreatedAt,
+			StartAt:   t.StartAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp(0, "success", "", "", map[string]interface{}{
@@ -203,6 +205,7 @@ func (h *TasksHandler) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
+		"start_at":      task.StartAt,
 		"finished_at":   task.FinishedAt,
 	}))
 }
@@ -245,6 +248,7 @@ func (h *TasksHandler) HandleLog(w http.ResponseWriter, r *http.Request) {
 		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
+		"start_at":      task.StartAt,
 		"finished_at":   task.FinishedAt,
 	}))
 }
@@ -280,6 +284,7 @@ func (h *TasksHandler) HandleLinkLog(w http.ResponseWriter, r *http.Request) {
 		"sdk_trace":     h.store.GetSdkTrace(task.TaskID),
 		"error_message": task.ErrorMessage,
 		"created_at":    task.CreatedAt,
+		"start_at":      task.StartAt,
 		"finished_at":   task.FinishedAt,
 	}))
 }
@@ -321,6 +326,7 @@ func (h *TasksHandler) HandleLinkHistory(w http.ResponseWriter, r *http.Request)
 			Status:       string(t.Status),
 			ErrorMessage: t.ErrorMessage,
 			CreatedAt:    t.CreatedAt,
+			StartAt:      t.StartAt,
 			FinishedAt:   t.FinishedAt,
 			Events:       buildOutputOnlyEvents(&t),
 		})

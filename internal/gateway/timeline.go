@@ -20,6 +20,7 @@ type historyTaskView struct {
 	Status       string          `json:"status"`
 	ErrorMessage string          `json:"error_message"`
 	CreatedAt    string          `json:"created_at"`
+	StartAt      string          `json:"start_at"`
 	FinishedAt   string          `json:"finished_at"`
 	Events       []timelineEvent `json:"events"`
 }
