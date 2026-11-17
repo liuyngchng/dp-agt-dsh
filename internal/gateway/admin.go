@@ -63,7 +63,7 @@ func (h *AdminHandler) HandleMock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, resp(1001, "mock.json 读取失败", "", "", nil))
 		return
 	}
-	var parsed interface{}
+	var parsed json.RawMessage
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		writeJSON(w, http.StatusBadRequest, resp(1001, "mock.json 解析失败: "+err.Error(), "", "", nil))
 		return
